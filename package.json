@@ -1,6 +1,6 @@
 {
   "name": "screp-js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pure Javascript version of screp, a StarCraft: Remastered replay file parser, compiled from the original Go version using GopherJS",
   "main": "dist/index.js",
   "scripts": {
