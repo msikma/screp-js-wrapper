@@ -10,3 +10,6 @@ fi
 
 echo "icza/screp" $(cat ./go.mod | grep "^\s\+github.com/icza/screp" | head -n 1 | grep -o "v\(.*\)")
 gopherjs build -vo "$BASEDIR"/dist/index.js "$BASEDIR"/src/main.go
+sed 's/$module.exports.ScrepJS/if ($module) $module.exports.ScrepJS/g' dist/index.js > dist/_index.js
+rm dist/index.js
+mv dist/_index.js dist/index.js
