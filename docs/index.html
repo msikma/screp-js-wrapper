@@ -69,13 +69,13 @@
 </body>
 <script>
 /** Converts a Blob object (or in our case, a File object which implements Blob) into a Uint8Array. */
-async function toArrayBuffer(blob) {
+async function toUint8Array(blob) {
   return new Uint8Array(await new Response(blob).arrayBuffer())
 }
 
 /** Processes a single .rep file. */
 async function processRep(file) {
-  const buffer = await toArrayBuffer(file)
+  const buffer = await toUint8Array(file)
   const [res, err] = ScrepJS.parseBuffer(buffer)
 
   if (err) {
