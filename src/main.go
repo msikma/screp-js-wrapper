@@ -1,13 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+
 	"github.com/gopherjs/gopherjs/js"
-	"github.com/icza/screp/rep"
 	"github.com/icza/screp/repparser"
 )
 
 // Parses a binary buffer as through it's a .rep file and returns an object with the result.
-func parseBuffer(buffer []byte) (*rep.Replay, *string) {
+func parseBuffer(buffer []byte) (map[string]interface{}, *string) {
 	res, err := repparser.ParseConfig(buffer, repparser.Config{Commands: true, MapData: true})
 
 	if err != nil {
@@ -17,8 +18,17 @@ func parseBuffer(buffer []byte) (*rep.Replay, *string) {
 
 	// Add computed properties.
 	res.Compute()
+
+	// Convert to JSON and back to mimic the exact structure provided by the command line tool.
+	jsonRes, err := json.Marshal(res)
+	if err != nil {
+		errStr := err.Error()
+		return nil, &errStr
+	}
 	
-	return res, nil
+	var resMap map[string]interface{}
+	json.Unmarshal([]byte(jsonRes), &resMap)
+	return resMap, nil
 }
 
 // Declares the ScrepJS object on the global object.
