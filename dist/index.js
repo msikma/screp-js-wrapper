@@ -35533,7 +35533,7 @@ $packages["main"] = (function() {
 	};
 	main = function() {
 		$global.ScrepJS = $externalize($makeMap($String.keyFor, [{ k: "parseBuffer", v: new funcType(parseBuffer) }]), mapType);
-		$module.exports.ScrepJS = $externalize($makeMap($String.keyFor, [{ k: "parseBuffer", v: new funcType(parseBuffer) }]), mapType);
+		if ($module) $module.exports.ScrepJS = $externalize($makeMap($String.keyFor, [{ k: "parseBuffer", v: new funcType(parseBuffer) }]), mapType);
 	};
 	$init = function() {
 		$pkg.$init = function() {};
