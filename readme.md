@@ -14,7 +14,7 @@ This library has been pre-compiled and can be installed through npm:
 npm i --save screp-js
 ```
 
-Keep in mind that the compiled screp library in JS is about 410 KB gzipped (and 2,3 MB otherwise).
+Keep in mind that the compiled screp library in JS is about 482 KB gzipped (and 2,8 MB otherwise).
 
 ## Usage
 
