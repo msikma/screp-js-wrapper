@@ -21,7 +21,7 @@
   "homepage": "https://github.com/msikma/screp-js",
   "repository": "https://github.com/msikma/screp-js",
   "author": "Michiel Sikma <michiel@sikma.org>",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "devDependencies": {
   },
   "dependencies": {
