@@ -2,11 +2,13 @@
 
 # screp-js-wrapper
 
+> ### Note: it's recommend that you use [screp-js](https://github.com/msikma/screp-js) instead of this package.
+
 A pure Javascript version of [screp](https://github.com/icza/screp), a StarCraft: Remastered replay file parser, compiled from the original Go version using [GopherJS](https://github.com/gopherjs/gopherjs).
 
 screp (StarCraft: Brood War Replay Parser) is a library for extracting information from StarCraft replay files. This simple wrapper library allows GopherJS, a compiler from Go to Javascript, to make it available for use in Node.
 
-This is a very thin wrapper and actually has slightly different output compared to the Screp command line tool due to the way the data structure works. **It's recommended to use [screp-js](https://github.com/msikma/screp-js) instead of this package**, as it does additional processing to change the output to what you'd expect.
+This is a very thin wrapper and actually has slightly different output compared to the Screp command line tool due to the way the data structure works. **It's recommended to use [screp-js](https://github.com/msikma/screp-js) instead of this package**, as it does additional processing to change the output to what you'd expect and is easier to use.
 
 ## Building
 
