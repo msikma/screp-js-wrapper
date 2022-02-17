@@ -1,6 +1,6 @@
 {
-  "name": "screp-js",
-  "version": "0.1.2",
+  "name": "screp-js-wrapper",
+  "version": "0.2.0",
   "description": "Pure Javascript version of screp, a StarCraft: Remastered replay file parser, compiled from the original Go version using GopherJS",
   "main": "dist/index.js",
   "scripts": {
@@ -18,8 +18,8 @@
     "StarCraft: Brood War",
     "StarCraft: Remastered"
   ],
-  "homepage": "https://github.com/msikma/screp-js",
-  "repository": "https://github.com/msikma/screp-js",
+  "homepage": "https://github.com/msikma/screp-js-wrapper",
+  "repository": "https://github.com/msikma/screp-js-wrapper",
   "author": "Michiel Sikma <michiel@sikma.org>",
   "license": "Apache-2.0",
   "devDependencies": {
