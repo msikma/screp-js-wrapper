@@ -8,6 +8,10 @@ screp (StarCraft: Brood War Replay Parser) is a library for extracting informati
 
 This is a very thin wrapper and actually has slightly different output compared to the Screp command line tool due to the way the data structure works. **It's recommended to use [screp-js](https://github.com/msikma/screp-js) instead of this package**, as it does additional processing to change the output to what you'd expect.
 
+## Building
+
+Run `build.sh` to build the project. Building is not necessary, as a compiled .js file is included.
+
 ## Copyright
 
 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), as per the original [screp](https://github.com/icza/screp) project.

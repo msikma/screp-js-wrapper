@@ -10,6 +10,7 @@ fi
 
 echo "icza/screp" $(cat "$BASEDIR"/go.mod | grep "^\s\+github.com/icza/screp" | head -n 1 | grep -o "v\(.*\)")
 gopherjs build -vo "$BASEDIR"/dist/index.js "$BASEDIR"/src/main.go
+# Remove the source map, since we don't intend for the Go code to be available to the end user.
 rm "$BASEDIR"/dist/index.js.map
 sed 's/^\/\/# sourceMappingURL=\(.*\)//g' "$BASEDIR"/dist/index.js > "$BASEDIR"/dist/_index.js
 rm "$BASEDIR"/dist/index.js
