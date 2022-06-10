@@ -4,7 +4,7 @@
   "description": "Pure Javascript version of screp, a StarCraft: Remastered replay file parser, compiled from the original Go version using GopherJS",
   "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest"
   },
   "files": [
     "index.js",
@@ -13,6 +13,9 @@
     "license.md",
     "readme.md"
   ],
+  "jest": {
+    "testMatch": ["**/test/*.js"]
+  },
   "keywords": [
     "StarCraft",
     "StarCraft: Brood War",
@@ -23,7 +26,6 @@
   "author": "Michiel Sikma <michiel@sikma.org>",
   "license": "Apache-2.0",
   "devDependencies": {
-  },
-  "dependencies": {
+    "jest": "^28.1.1"
   }
 }
