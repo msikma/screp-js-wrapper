@@ -11,7 +11,7 @@ import (
 // Note: copied from icza/screp/cmd/screp.
 const (
 	appName    = "screp"
-	appVersion = "v1.5.1"
+	appVersion = "v1.7.2"
 	appAuthor  = "Andras Belicza"
 	appHome    = "https://github.com/icza/screp"
 )

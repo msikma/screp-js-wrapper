@@ -55,11 +55,11 @@ describe(`screp-js-wrapper package`, () => {
   test(`ScrepJS.getVersion()`, () => {
     const versionObject = ScrepJS.getVersion()
     expect(versionObject).toStrictEqual([
-      ['screp version', 'v1.5.1'],
-      ['Parser version', 'v1.7.0'],
+      ['screp version', 'v1.7.2'],
+      ['Parser version', 'v1.8.2'],
       ['EAPM algorithm version', 'v1.0.4'],
       ['Platform', 'darwin js'], // note: this is hardcoded due to my build platform.
-      ['Built with', 'go1.17.5'],
+      ['Built with', 'go1.17.13'],
       ['Author', 'Andras Belicza'],
       ['Home page', 'https://github.com/icza/screp']
     ])
