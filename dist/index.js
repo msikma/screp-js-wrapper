@@ -1,7 +1,7 @@
 "use strict";
 (function() {
 
-var $goVersion = "go1.17.5";
+var $goVersion = "go1.17.13";
 Error.stackTraceLimit = Infinity;
 
 var $global, $module;
@@ -1870,7 +1870,7 @@ var $needsExternalization = function(t) {
   }
 };
 
-var $externalize = function(v, t) {
+var $externalize = function(v, t, makeWrapper) {
   if (t === $jsObjectPtr) {
     return v;
   }
@@ -1893,11 +1893,11 @@ var $externalize = function(v, t) {
     return $flatten64(v);
   case $kindArray:
     if ($needsExternalization(t.elem)) {
-      return $mapArray(v, function(e) { return $externalize(e, t.elem); });
+      return $mapArray(v, function(e) { return $externalize(e, t.elem, makeWrapper); });
     }
     return v;
   case $kindFunc:
-    return $externalizeFunction(v, t, false);
+    return $externalizeFunction(v, t, false, makeWrapper);
   case $kindInterface:
     if (v === $ifaceNil) {
       return null;
@@ -1905,23 +1905,23 @@ var $externalize = function(v, t) {
     if (v.constructor === $jsObjectPtr) {
       return v.$val.object;
     }
-    return $externalize(v.$val, v.constructor);
+    return $externalize(v.$val, v.constructor, makeWrapper);
   case $kindMap:
     var m = {};
     var keys = $keys(v);
     for (var i = 0; i < keys.length; i++) {
       var entry = v[keys[i]];
-      m[$externalize(entry.k, t.key)] = $externalize(entry.v, t.elem);
+      m[$externalize(entry.k, t.key, makeWrapper)] = $externalize(entry.v, t.elem, makeWrapper);
     }
     return m;
   case $kindPtr:
     if (v === t.nil) {
       return null;
     }
-    return $externalize(v.$get(), t.elem);
+    return $externalize(v.$get(), t.elem, makeWrapper);
   case $kindSlice:
     if ($needsExternalization(t.elem)) {
-      return $mapArray($sliceToNativeArray(v), function(e) { return $externalize(e, t.elem); });
+      return $mapArray($sliceToNativeArray(v), function(e) { return $externalize(e, t.elem, makeWrapper); });
     }
     return $sliceToNativeArray(v);
   case $kindString:
@@ -1973,20 +1973,24 @@ var $externalize = function(v, t) {
       return o;
     }
 
+    if (makeWrapper !== undefined) {
+      return makeWrapper(v);
+    }
+
     o = {};
     for (var i = 0; i < t.fields.length; i++) {
       var f = t.fields[i];
       if (!f.exported) {
         continue;
       }
-      o[f.name] = $externalize(v[f.prop], f.typ);
+      o[f.name] = $externalize(v[f.prop], f.typ, makeWrapper);
     }
     return o;
   }
   $throwRuntimeError("cannot externalize " + t.string);
 };
 
-var $externalizeFunction = function(v, t, passThis) {
+var $externalizeFunction = function(v, t, passThis, makeWrapper) {
   if (v === $throwNilPointerError) {
     return null;
   }
@@ -1998,22 +2002,22 @@ var $externalizeFunction = function(v, t, passThis) {
         if (t.variadic && i === t.params.length - 1) {
           var vt = t.params[i].elem, varargs = [];
           for (var j = i; j < arguments.length; j++) {
-            varargs.push($internalize(arguments[j], vt));
+            varargs.push($internalize(arguments[j], vt, makeWrapper));
           }
           args.push(new (t.params[i])(varargs));
           break;
         }
-        args.push($internalize(arguments[i], t.params[i]));
+        args.push($internalize(arguments[i], t.params[i], makeWrapper));
       }
       var result = v.apply(passThis ? this : undefined, args);
       switch (t.results.length) {
       case 0:
         return;
       case 1:
-        return $externalize(result, t.results[0]);
+        return $externalize($copyIfRequired(result, t.results[0]), t.results[0], makeWrapper);
       default:
         for (var i = 0; i < t.results.length; i++) {
-          result[i] = $externalize(result[i], t.results[i]);
+          result[i] = $externalize($copyIfRequired(result[i], t.results[i]), t.results[i], makeWrapper);
         }
         return result;
       }
@@ -2022,7 +2026,7 @@ var $externalizeFunction = function(v, t, passThis) {
   return v.$externalizeWrapper;
 };
 
-var $internalize = function(v, t, recv, seen) {
+var $internalize = function(v, t, recv, seen, makeWrapper) {
   if (t === $jsObjectPtr) {
     return v;
   }
@@ -2076,7 +2080,7 @@ var $internalize = function(v, t, recv, seen) {
     if (v.length !== t.len) {
       $throwRuntimeError("got array with wrong size from JavaScript native");
     }
-    return $mapArray(v, function(e) { return $internalize(e, t.elem); });
+    return $mapArray(v, function(e) { return $internalize(e, t.elem, makeWrapper); });
   case $kindFunc:
     return function() {
       var args = [];
@@ -2084,21 +2088,21 @@ var $internalize = function(v, t, recv, seen) {
         if (t.variadic && i === t.params.length - 1) {
           var vt = t.params[i].elem, varargs = arguments[i];
           for (var j = 0; j < varargs.$length; j++) {
-            args.push($externalize(varargs.$array[varargs.$offset + j], vt));
+            args.push($externalize(varargs.$array[varargs.$offset + j], vt, makeWrapper));
           }
           break;
         }
-        args.push($externalize(arguments[i], t.params[i]));
+        args.push($externalize(arguments[i], t.params[i], makeWrapper));
       }
       var result = v.apply(recv, args);
       switch (t.results.length) {
       case 0:
         return;
       case 1:
-        return $internalize(result, t.results[0]);
+        return $internalize(result, t.results[0], makeWrapper);
       default:
         for (var i = 0; i < t.results.length; i++) {
-          result[i] = $internalize(result[i], t.results[i]);
+          result[i] = $internalize(result[i], t.results[i], makeWrapper);
         }
         return result;
       }
@@ -2131,7 +2135,7 @@ var $internalize = function(v, t, recv, seen) {
     case Float64Array:
       return new ($sliceType($Float64))(v);
     case Array:
-      return $internalize(v, $sliceType($emptyInterface));
+      return $internalize(v, $sliceType($emptyInterface), makeWrapper);
     case Boolean:
       return new $Bool(!!v);
     case Date:
@@ -2139,36 +2143,36 @@ var $internalize = function(v, t, recv, seen) {
         /* time package is not present, internalize as &js.Object{Date} so it can be externalized into original Date. */
         return new $jsObjectPtr(v);
       }
-      return new timePkg.Time($internalize(v, timePkg.Time));
+      return new timePkg.Time($internalize(v, timePkg.Time, makeWrapper));
     case (function () { }).constructor: // is usually Function, but in Chrome extensions it is something else
       var funcType = $funcType([$sliceType($emptyInterface)], [$jsObjectPtr], true);
-      return new funcType($internalize(v, funcType));
+      return new funcType($internalize(v, funcType, makeWrapper));
     case Number:
       return new $Float64(parseFloat(v));
     case String:
-      return new $String($internalize(v, $String));
+      return new $String($internalize(v, $String, makeWrapper));
     default:
       if ($global.Node && v instanceof $global.Node) {
         return new $jsObjectPtr(v);
       }
       var mapType = $mapType($String, $emptyInterface);
-      return new mapType($internalize(v, mapType, recv, seen));
+      return new mapType($internalize(v, mapType, recv, seen, makeWrapper));
     }
   case $kindMap:
     var m = {};
     seen.get(t).set(v, m);
     var keys = $keys(v);
     for (var i = 0; i < keys.length; i++) {
-      var k = $internalize(keys[i], t.key, recv, seen);
-      m[t.key.keyFor(k)] = { k: k, v: $internalize(v[keys[i]], t.elem, recv, seen) };
+      var k = $internalize(keys[i], t.key, recv, seen, makeWrapper);
+      m[t.key.keyFor(k)] = { k: k, v: $internalize(v[keys[i]], t.elem, recv, seen, makeWrapper) };
     }
     return m;
   case $kindPtr:
     if (t.elem.kind === $kindStruct) {
-      return $internalize(v, t.elem);
+      return $internalize(v, t.elem, makeWrapper);
     }
   case $kindSlice:
-    return new t($mapArray(v, function(e) { return $internalize(e, t.elem); }));
+    return new t($mapArray(v, function(e) { return $internalize(e, t.elem, makeWrapper); }));
   case $kindString:
     v = String(v);
     if ($isASCII(v)) {
@@ -2221,6 +2225,20 @@ var $internalize = function(v, t, recv, seen) {
   }
   $throwRuntimeError("cannot internalize " + t.string);
 };
+
+var $copyIfRequired = function(v, typ) {
+  // interface values
+  if (v && v.constructor && v.constructor.copy) {
+    return new v.constructor($clone(v.$val, v.constructor))
+  }
+  // array and struct values
+  if (typ.copy) {
+    var clone = typ.zero();
+    typ.copy(clone, v);
+    return clone;
+  }
+  return v;
+}
 
 /* $isASCII reports whether string s contains only ASCII characters. */
 var $isASCII = function(s) {
@@ -27259,7 +27277,7 @@ $packages["bytes"] = (function() {
 	return $pkg;
 })();
 $packages["github.com/icza/screp/rep/repcore"] = (function() {
-	var $pkg = {}, $init, bytes, fmt, time, Frame, Point, IneffKind, Enum, Engine, Speed, GameType, PlayerType, Race, Color, TileSet, sliceType, ptrType, sliceType$1, ptrType$1, sliceType$2, ptrType$2, sliceType$3, ptrType$3, sliceType$4, ptrType$4, sliceType$5, ptrType$5, sliceType$6, sliceType$7, ptrType$6, sliceType$8, sliceType$9, ineffKindStrings, footprintFirstByteColors, _r, Duration2Frame, UnknownEnum, EngineByID, SpeedByID, GameTypeByID, PlayerTypeByID, RaceByID, ColorByID, init, ColorByFootprint, TileSetByID;
+	var $pkg = {}, $init, bytes, fmt, time, Frame, Point, IneffKind, Enum, Engine, Speed, GameType, PlayerType, Race, Color, TileSet, PlayerOwner, PlayerSide, sliceType, ptrType, sliceType$1, ptrType$1, sliceType$2, ptrType$2, sliceType$3, ptrType$3, sliceType$4, ptrType$4, sliceType$5, ptrType$5, sliceType$6, sliceType$7, ptrType$6, sliceType$8, ptrType$7, sliceType$9, ptrType$8, sliceType$10, sliceType$11, ineffKindStrings, footprintFirstByteColors, _r, Duration2Frame, UnknownEnum, EngineByID, SpeedByID, GameTypeByID, PlayerTypeByID, RaceByID, ColorByID, init, ColorByFootprint, TileSetByID, PlayerOwnerByID, PlayerSideByID;
 	bytes = $packages["bytes"];
 	fmt = $packages["fmt"];
 	time = $packages["time"];
@@ -27365,6 +27383,26 @@ $packages["github.com/icza/screp/rep/repcore"] = (function() {
 		this.Enum = Enum_;
 		this.ID = ID_;
 	});
+	PlayerOwner = $pkg.PlayerOwner = $newType(0, $kindStruct, "repcore.PlayerOwner", true, "github.com/icza/screp/rep/repcore", true, function(Enum_, ID_) {
+		this.$val = this;
+		if (arguments.length === 0) {
+			this.Enum = new Enum.ptr("");
+			this.ID = 0;
+			return;
+		}
+		this.Enum = Enum_;
+		this.ID = ID_;
+	});
+	PlayerSide = $pkg.PlayerSide = $newType(0, $kindStruct, "repcore.PlayerSide", true, "github.com/icza/screp/rep/repcore", true, function(Enum_, ID_) {
+		this.$val = this;
+		if (arguments.length === 0) {
+			this.Enum = new Enum.ptr("");
+			this.ID = 0;
+			return;
+		}
+		this.Enum = Enum_;
+		this.ID = ID_;
+	});
 	sliceType = $sliceType($String);
 	ptrType = $ptrType(Engine);
 	sliceType$1 = $sliceType(ptrType);
@@ -27381,7 +27419,11 @@ $packages["github.com/icza/screp/rep/repcore"] = (function() {
 	sliceType$7 = $sliceType($Uint8);
 	ptrType$6 = $ptrType(TileSet);
 	sliceType$8 = $sliceType(ptrType$6);
-	sliceType$9 = $sliceType($emptyInterface);
+	ptrType$7 = $ptrType(PlayerOwner);
+	sliceType$9 = $sliceType(ptrType$7);
+	ptrType$8 = $ptrType(PlayerSide);
+	sliceType$10 = $sliceType(ptrType$8);
+	sliceType$11 = $sliceType($emptyInterface);
 	Frame.prototype.Seconds = function() {
 		var f;
 		f = this.$val;
@@ -27409,11 +27451,11 @@ $packages["github.com/icza/screp/rep/repcore"] = (function() {
 		/* */ if ((min.$high < 0 || (min.$high === 0 && min.$low < 60))) { $s = 1; continue; }
 		/* */ $s = 2; continue;
 		/* if ((min.$high < 0 || (min.$high === 0 && min.$low < 60))) { */ case 1:
-			_r$1 = fmt.Sprintf("%02d:%02d", new sliceType$9([min, $div64(sec, new $Int64(0, 60), true)])); /* */ $s = 3; case 3: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
+			_r$1 = fmt.Sprintf("%02d:%02d", new sliceType$11([min, $div64(sec, new $Int64(0, 60), true)])); /* */ $s = 3; case 3: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
 			$24r = _r$1;
 			$s = 4; case 4: return $24r;
 		/* } */ case 2:
-		_r$2 = fmt.Sprintf("%d:%02d:%02d", new sliceType$9([$div64(min, new $Int64(0, 60), false), $div64(min, new $Int64(0, 60), true), $div64(sec, new $Int64(0, 60), true)])); /* */ $s = 5; case 5: if($c) { $c = false; _r$2 = _r$2.$blk(); } if (_r$2 && _r$2.$blk !== undefined) { break s; }
+		_r$2 = fmt.Sprintf("%d:%02d:%02d", new sliceType$11([$div64(min, new $Int64(0, 60), false), $div64(min, new $Int64(0, 60), true), $div64(sec, new $Int64(0, 60), true)])); /* */ $s = 5; case 5: if($c) { $c = false; _r$2 = _r$2.$blk(); } if (_r$2 && _r$2.$blk !== undefined) { break s; }
 		$24r$1 = _r$2;
 		$s = 6; case 6: return $24r$1;
 		/* */ } return; } if ($f === undefined) { $f = { $blk: Frame.prototype.String }; } $f.$24r = $24r; $f.$24r$1 = $24r$1; $f._r$1 = _r$1; $f._r$2 = _r$2; $f.f = f; $f.min = min; $f.sec = sec; $f.$s = $s; $f.$r = $r; return $f;
@@ -27428,7 +27470,7 @@ $packages["github.com/icza/screp/rep/repcore"] = (function() {
 		var $24r, _r$1, p, $s, $r;
 		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; $24r = $f.$24r; _r$1 = $f._r$1; p = $f.p; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
 		p = this;
-		_r$1 = fmt.Sprint(new sliceType$9([new $String("x="), new $Uint16(p.X), new $String(", y="), new $Uint16(p.Y)])); /* */ $s = 1; case 1: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
+		_r$1 = fmt.Sprint(new sliceType$11([new $String("x="), new $Uint16(p.X), new $String(", y="), new $Uint16(p.Y)])); /* */ $s = 1; case 1: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
 		$24r = _r$1;
 		$s = 2; case 2: return $24r;
 		/* */ } return; } if ($f === undefined) { $f = { $blk: Point.ptr.prototype.String }; } $f.$24r = $24r; $f._r$1 = _r$1; $f.p = p; $f.$s = $s; $f.$r = $r; return $f;
@@ -27455,7 +27497,7 @@ $packages["github.com/icza/screp/rep/repcore"] = (function() {
 	UnknownEnum = function(ID) {
 		var $24r, ID, _r$1, $s, $r;
 		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; $24r = $f.$24r; ID = $f.ID; _r$1 = $f._r$1; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
-		_r$1 = fmt.Sprintf("Unknown 0x%x", new sliceType$9([ID])); /* */ $s = 1; case 1: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
+		_r$1 = fmt.Sprintf("Unknown 0x%x", new sliceType$11([ID])); /* */ $s = 1; case 1: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
 		$24r = new Enum.ptr(_r$1);
 		$s = 2; case 2: return $24r;
 		/* */ } return; } if ($f === undefined) { $f = { $blk: UnknownEnum }; } $f.$24r = $24r; $f.ID = ID; $f._r$1 = _r$1; $f.$s = $s; $f.$r = $r; return $f;
@@ -27577,6 +27619,30 @@ $packages["github.com/icza/screp/rep/repcore"] = (function() {
 		/* */ } return; } if ($f === undefined) { $f = { $blk: TileSetByID }; } $f.$24r = $24r; $f.ID = ID; $f._r$1 = _r$1; $f.$s = $s; $f.$r = $r; return $f;
 	};
 	$pkg.TileSetByID = TileSetByID;
+	PlayerOwnerByID = function(ID) {
+		var $24r, ID, _r$1, $s, $r;
+		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; $24r = $f.$24r; ID = $f.ID; _r$1 = $f._r$1; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
+		if (((ID >> 0)) < $pkg.PlayerOwners.$length) {
+			$s = -1; return ((ID < 0 || ID >= $pkg.PlayerOwners.$length) ? ($throwRuntimeError("index out of range"), undefined) : $pkg.PlayerOwners.$array[$pkg.PlayerOwners.$offset + ID]);
+		}
+		_r$1 = UnknownEnum(new $Uint8(ID)); /* */ $s = 1; case 1: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
+		$24r = new PlayerOwner.ptr($clone(_r$1, Enum), ID);
+		$s = 2; case 2: return $24r;
+		/* */ } return; } if ($f === undefined) { $f = { $blk: PlayerOwnerByID }; } $f.$24r = $24r; $f.ID = ID; $f._r$1 = _r$1; $f.$s = $s; $f.$r = $r; return $f;
+	};
+	$pkg.PlayerOwnerByID = PlayerOwnerByID;
+	PlayerSideByID = function(ID) {
+		var $24r, ID, _r$1, $s, $r;
+		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; $24r = $f.$24r; ID = $f.ID; _r$1 = $f._r$1; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
+		if (((ID >> 0)) < $pkg.PlayerSides.$length) {
+			$s = -1; return ((ID < 0 || ID >= $pkg.PlayerSides.$length) ? ($throwRuntimeError("index out of range"), undefined) : $pkg.PlayerSides.$array[$pkg.PlayerSides.$offset + ID]);
+		}
+		_r$1 = UnknownEnum(new $Uint8(ID)); /* */ $s = 1; case 1: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
+		$24r = new PlayerSide.ptr($clone(_r$1, Enum), ID);
+		$s = 2; case 2: return $24r;
+		/* */ } return; } if ($f === undefined) { $f = { $blk: PlayerSideByID }; } $f.$24r = $24r; $f.ID = ID; $f._r$1 = _r$1; $f.$s = $s; $f.$r = $r; return $f;
+	};
+	$pkg.PlayerSideByID = PlayerSideByID;
 	Frame.methods = [{prop: "Seconds", name: "Seconds", pkg: "", typ: $funcType([], [$Float64], false)}, {prop: "Milliseconds", name: "Milliseconds", pkg: "", typ: $funcType([], [$Int64], false)}, {prop: "Duration", name: "Duration", pkg: "", typ: $funcType([], [time.Duration], false)}, {prop: "String", name: "String", pkg: "", typ: $funcType([], [$String], false)}];
 	Point.methods = [{prop: "String", name: "String", pkg: "", typ: $funcType([], [$String], false)}];
 	IneffKind.methods = [{prop: "Effective", name: "Effective", pkg: "", typ: $funcType([], [$Bool], false)}, {prop: "String", name: "String", pkg: "", typ: $funcType([], [$String], false)}];
@@ -27590,6 +27656,8 @@ $packages["github.com/icza/screp/rep/repcore"] = (function() {
 	Race.init("", [{prop: "Enum", name: "Enum", embedded: true, exported: true, typ: Enum, tag: ""}, {prop: "ID", name: "ID", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "ShortName", name: "ShortName", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "Letter", name: "Letter", embedded: false, exported: true, typ: $Int32, tag: ""}]);
 	Color.init("github.com/icza/screp/rep/repcore", [{prop: "Enum", name: "Enum", embedded: true, exported: true, typ: Enum, tag: ""}, {prop: "ID", name: "ID", embedded: false, exported: true, typ: $Uint32, tag: ""}, {prop: "RGB", name: "RGB", embedded: false, exported: true, typ: $Uint32, tag: ""}, {prop: "footprint", name: "footprint", embedded: false, exported: false, typ: sliceType$7, tag: ""}]);
 	TileSet.init("", [{prop: "Enum", name: "Enum", embedded: true, exported: true, typ: Enum, tag: ""}, {prop: "ID", name: "ID", embedded: false, exported: true, typ: $Uint16, tag: ""}]);
+	PlayerOwner.init("", [{prop: "Enum", name: "Enum", embedded: true, exported: true, typ: Enum, tag: ""}, {prop: "ID", name: "ID", embedded: false, exported: true, typ: $Uint8, tag: ""}]);
+	PlayerSide.init("", [{prop: "Enum", name: "Enum", embedded: true, exported: true, typ: Enum, tag: ""}, {prop: "ID", name: "ID", embedded: false, exported: true, typ: $Uint8, tag: ""}]);
 	$init = function() {
 		$pkg.$init = function() {};
 		/* */ var $f, $c = false, $s = 0, $r; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
@@ -27604,14 +27672,18 @@ $packages["github.com/icza/screp/rep/repcore"] = (function() {
 		$pkg.GameTypeMelee = (2 >= $pkg.GameTypes.$length ? ($throwRuntimeError("index out of range"), undefined) : $pkg.GameTypes.$array[$pkg.GameTypes.$offset + 2]);
 		$pkg.GameTypeFFA = (3 >= $pkg.GameTypes.$length ? ($throwRuntimeError("index out of range"), undefined) : $pkg.GameTypes.$array[$pkg.GameTypes.$offset + 3]);
 		$pkg.GameType1v1 = (4 >= $pkg.GameTypes.$length ? ($throwRuntimeError("index out of range"), undefined) : $pkg.GameTypes.$array[$pkg.GameTypes.$offset + 4]);
+		$pkg.GameTypeUMS = (10 >= $pkg.GameTypes.$length ? ($throwRuntimeError("index out of range"), undefined) : $pkg.GameTypes.$array[$pkg.GameTypes.$offset + 10]);
 		$pkg.PlayerTypes = new sliceType$4([new PlayerType.ptr(new Enum.ptr("Inactive"), 0), new PlayerType.ptr(new Enum.ptr("Computer"), 1), new PlayerType.ptr(new Enum.ptr("Human"), 2), new PlayerType.ptr(new Enum.ptr("Rescue Passive"), 3), new PlayerType.ptr(new Enum.ptr("(Unused)"), 4), new PlayerType.ptr(new Enum.ptr("Computer Controlled"), 5), new PlayerType.ptr(new Enum.ptr("Open"), 6), new PlayerType.ptr(new Enum.ptr("Neutral"), 7), new PlayerType.ptr(new Enum.ptr("Closed"), 8)]);
 		$pkg.PlayerTypeInactive = (0 >= $pkg.PlayerTypes.$length ? ($throwRuntimeError("index out of range"), undefined) : $pkg.PlayerTypes.$array[$pkg.PlayerTypes.$offset + 0]);
 		$pkg.PlayerTypeComputer = (1 >= $pkg.PlayerTypes.$length ? ($throwRuntimeError("index out of range"), undefined) : $pkg.PlayerTypes.$array[$pkg.PlayerTypes.$offset + 1]);
 		$pkg.PlayerTypeHuman = (2 >= $pkg.PlayerTypes.$length ? ($throwRuntimeError("index out of range"), undefined) : $pkg.PlayerTypes.$array[$pkg.PlayerTypes.$offset + 2]);
 		$pkg.Races = new sliceType$5([new Race.ptr(new Enum.ptr("Zerg"), 0, "zerg", 90), new Race.ptr(new Enum.ptr("Terran"), 1, "ran", 84), new Race.ptr(new Enum.ptr("Protoss"), 2, "toss", 80)]);
-		$pkg.Colors = new sliceType$6([new Color.ptr(new Enum.ptr("Red"), 0, 15991812, new sliceType$7([245, 244, 116, 63, 129, 128, 128, 60, 129, 128, 128, 60, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Blue"), 1, 805068, new sliceType$7([193, 192, 64, 61, 145, 144, 144, 62, 205, 204, 76, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Teal"), 2, 2929812, new sliceType$7([177, 176, 48, 62, 181, 180, 52, 63, 149, 148, 20, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Purple"), 3, 8929436, new sliceType$7([137, 136, 8, 63, 129, 128, 128, 62, 157, 156, 28, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Orange"), 4, 16288788, new sliceType$7([249, 248, 120, 63, 141, 140, 12, 63, 161, 160, 160, 61, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Brown"), 5, 7352340, new sliceType$7([225, 224, 224, 62, 193, 192, 64, 62, 161, 160, 160, 61, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("White"), 6, 13426896, new sliceType$7([205, 204, 76, 63, 225, 224, 96, 63, 209, 208, 80, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Yellow"), 7, 16579640, new sliceType$7([253, 252, 124, 63, 253, 252, 124, 63, 225, 224, 96, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Green"), 8, 557064, new sliceType$7([253, 252, 124, 63, 253, 252, 124, 63, 225, 224, 96, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Pale Yellow"), 9, 16579708, new sliceType$7([253, 252, 124, 63, 253, 252, 124, 63, 249, 248, 248, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Tan"), 10, 15516848, new sliceType$7([237, 236, 108, 63, 197, 196, 68, 63, 177, 176, 48, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Aqua"), 11, 4221140, sliceType$7.nil), new Color.ptr(new Enum.ptr("Pale Green"), 12, 7644284, new sliceType$7([233, 232, 232, 62, 165, 164, 36, 63, 249, 248, 248, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Blueish Grey"), 13, 9474232, new sliceType$7([229, 228, 228, 62, 145, 144, 16, 63, 185, 184, 56, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Pale Yellow2"), 14, 16579708, sliceType$7.nil), new Color.ptr(new Enum.ptr("Cyan"), 15, 58620, new sliceType$7([0, 0, 0, 0, 229, 228, 100, 63, 253, 252, 124, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Pink"), 16, 16762084, new sliceType$7([0, 0, 128, 63, 197, 196, 68, 63, 229, 228, 100, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Olive"), 17, 7895040, new sliceType$7([129, 128, 0, 63, 129, 128, 0, 63, 0, 0, 0, 0, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Lime"), 18, 13825340, new sliceType$7([211, 210, 82, 63, 246, 245, 117, 63, 241, 240, 112, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Navy"), 19, 230, new sliceType$7([0, 0, 0, 0, 0, 0, 0, 0, 129, 128, 0, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Dark Aqua"), 20, 4221140, new sliceType$7([129, 128, 128, 62, 209, 208, 208, 62, 213, 212, 84, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Magenta"), 21, 15741670, new sliceType$7([241, 240, 112, 63, 201, 200, 72, 62, 231, 230, 102, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Grey"), 22, 8421504, new sliceType$7([129, 128, 0, 63, 129, 128, 0, 63, 129, 128, 0, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Black"), 23, 3947580, new sliceType$7([241, 240, 112, 62, 241, 240, 112, 62, 241, 240, 112, 62, 0, 0, 128, 63]))]);
+		$pkg.Colors = new sliceType$6([new Color.ptr(new Enum.ptr("Red"), 0, 15991812, new sliceType$7([245, 244, 116, 63, 129, 128, 128, 60, 129, 128, 128, 60, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Blue"), 1, 805068, new sliceType$7([193, 192, 64, 61, 145, 144, 144, 62, 205, 204, 76, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Teal"), 2, 2929812, new sliceType$7([177, 176, 48, 62, 181, 180, 52, 63, 149, 148, 20, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Purple"), 3, 8929436, new sliceType$7([137, 136, 8, 63, 129, 128, 128, 62, 157, 156, 28, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Orange"), 4, 16288788, new sliceType$7([249, 248, 120, 63, 141, 140, 12, 63, 161, 160, 160, 61, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Brown"), 5, 7352340, new sliceType$7([225, 224, 224, 62, 193, 192, 64, 62, 161, 160, 160, 61, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("White"), 6, 13426896, new sliceType$7([205, 204, 76, 63, 225, 224, 96, 63, 209, 208, 80, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Yellow"), 7, 16579640, new sliceType$7([253, 252, 124, 63, 253, 252, 124, 63, 225, 224, 96, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Green"), 8, 557064, new sliceType$7([129, 128, 0, 61, 129, 128, 0, 63, 129, 128, 0, 61, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Pale Yellow"), 9, 16579708, new sliceType$7([253, 252, 124, 63, 253, 252, 124, 63, 249, 248, 248, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Tan"), 10, 15516848, new sliceType$7([237, 236, 108, 63, 197, 196, 68, 63, 177, 176, 48, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Aqua"), 11, 4221140, sliceType$7.nil), new Color.ptr(new Enum.ptr("Pale Green"), 12, 7644284, new sliceType$7([233, 232, 232, 62, 165, 164, 36, 63, 249, 248, 248, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Blueish Grey"), 13, 9474232, new sliceType$7([229, 228, 228, 62, 145, 144, 16, 63, 185, 184, 56, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Pale Yellow2"), 14, 16579708, sliceType$7.nil), new Color.ptr(new Enum.ptr("Cyan"), 15, 58620, new sliceType$7([0, 0, 0, 0, 229, 228, 100, 63, 253, 252, 124, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Pink"), 16, 16762084, new sliceType$7([0, 0, 128, 63, 197, 196, 68, 63, 229, 228, 100, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Olive"), 17, 7895040, new sliceType$7([129, 128, 0, 63, 129, 128, 0, 63, 0, 0, 0, 0, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Lime"), 18, 13825340, new sliceType$7([211, 210, 82, 63, 246, 245, 117, 63, 241, 240, 112, 62, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Navy"), 19, 230, new sliceType$7([0, 0, 0, 0, 0, 0, 0, 0, 129, 128, 0, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Dark Aqua"), 20, 4221140, new sliceType$7([129, 128, 128, 62, 209, 208, 208, 62, 213, 212, 84, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Magenta"), 21, 15741670, new sliceType$7([241, 240, 112, 63, 201, 200, 72, 62, 231, 230, 102, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Grey"), 22, 8421504, new sliceType$7([129, 128, 0, 63, 129, 128, 0, 63, 129, 128, 0, 63, 0, 0, 128, 63])), new Color.ptr(new Enum.ptr("Black"), 23, 3947580, new sliceType$7([241, 240, 112, 62, 241, 240, 112, 62, 241, 240, 112, 62, 0, 0, 128, 63]))]);
 		footprintFirstByteColors = $makeMap($Uint8.keyFor, []);
 		$pkg.TileSets = new sliceType$8([new TileSet.ptr(new Enum.ptr("Badlands"), 0), new TileSet.ptr(new Enum.ptr("Space Platform"), 1), new TileSet.ptr(new Enum.ptr("Installation"), 2), new TileSet.ptr(new Enum.ptr("Ashworld"), 3), new TileSet.ptr(new Enum.ptr("Jungle"), 4), new TileSet.ptr(new Enum.ptr("Desert"), 5), new TileSet.ptr(new Enum.ptr("Arctic"), 6), new TileSet.ptr(new Enum.ptr("Twilight"), 7)]);
+		$pkg.PlayerOwners = new sliceType$9([new PlayerOwner.ptr(new Enum.ptr("Inactive"), 0), new PlayerOwner.ptr(new Enum.ptr("Computer (game)"), 1), new PlayerOwner.ptr(new Enum.ptr("Occupied by Human Player"), 2), new PlayerOwner.ptr(new Enum.ptr("Rescue Passive"), 3), new PlayerOwner.ptr(new Enum.ptr("Unused"), 4), new PlayerOwner.ptr(new Enum.ptr("Computer"), 5), new PlayerOwner.ptr(new Enum.ptr("Human (Open Slot)"), 6), new PlayerOwner.ptr(new Enum.ptr("Neutral"), 7), new PlayerOwner.ptr(new Enum.ptr("Closed slot"), 8)]);
+		$pkg.PlayerOwnerHumanOpenSlot = (6 >= $pkg.PlayerOwners.$length ? ($throwRuntimeError("index out of range"), undefined) : $pkg.PlayerOwners.$array[$pkg.PlayerOwners.$offset + 6]);
+		$pkg.PlayerSides = new sliceType$10([new PlayerSide.ptr(new Enum.ptr("Zerg"), 0), new PlayerSide.ptr(new Enum.ptr("Terran"), 1), new PlayerSide.ptr(new Enum.ptr("Protoss"), 2), new PlayerSide.ptr(new Enum.ptr("Invalid (Independent)"), 3), new PlayerSide.ptr(new Enum.ptr("Invalid (Neutral)"), 4), new PlayerSide.ptr(new Enum.ptr("User Selectable"), 5), new PlayerSide.ptr(new Enum.ptr("Random (Forced)"), 6), new PlayerSide.ptr(new Enum.ptr("Inactive"), 7)]);
 		init();
 		/* */ } return; } if ($f === undefined) { $f = { $blk: $init }; } $f.$s = $s; $f.$r = $r; return $f;
 	};
@@ -28725,7 +28797,7 @@ $packages["github.com/icza/screp/rep/repcmd"] = (function() {
 	return $pkg;
 })();
 $packages["github.com/icza/screp/rep"] = (function() {
-	var $pkg = {}, $init, fmt, repcmd, repcore, math, sort, strings, time, Replay, MapData, StartLocation, MapDataDebug, Header, Player, HeaderDebug, DebugFieldDescriptor, Computed, PlayerDesc, Commands, CommandsDebug, pidCmdsWrapper, wrapper, ptrType, ptrType$1, sliceType, ptrType$2, sliceType$1, ptrType$3, sliceType$2, ptrType$4, ptrType$5, sliceType$3, ptrType$6, ptrType$7, ptrType$8, ptrType$9, sliceType$4, ptrType$10, sliceType$5, sliceType$6, sliceType$7, ptrType$11, ptrType$12, ptrType$13, ptrType$14, ptrType$15, mapType, ptrType$16, ptrType$17, sliceType$8, sliceType$9, sliceType$10, ptrType$18, ptrType$19, ptrType$20, ptrType$21, ptrType$22, sliceType$11, ptrType$23, mapType$1, ptrType$24, ptrType$25, ptrType$26, ptrType$27, sliceType$12, mapType$2, ptrType$28, sliceType$13, ptrType$29, angleToClock, CmdIneffKind, countSameCmds, isSelectionChanger;
+	var $pkg = {}, $init, fmt, repcmd, repcore, math, sort, strings, time, Replay, MapData, Resource, StartLocation, MapDataDebug, Header, Player, HeaderDebug, DebugFieldDescriptor, Computed, PlayerDesc, Commands, CommandsDebug, pidCmdsWrapper, wrapper, ptrType, ptrType$1, sliceType, ptrType$2, sliceType$1, ptrType$3, ptrType$4, sliceType$2, ptrType$5, ptrType$6, sliceType$3, ptrType$7, ptrType$8, ptrType$9, ptrType$10, ptrType$11, sliceType$4, ptrType$12, sliceType$5, ptrType$13, ptrType$14, ptrType$15, sliceType$6, sliceType$7, ptrType$16, ptrType$17, ptrType$18, ptrType$19, ptrType$20, mapType, ptrType$21, ptrType$22, ptrType$23, sliceType$8, ptrType$24, sliceType$9, sliceType$10, sliceType$11, sliceType$12, ptrType$25, ptrType$26, ptrType$27, ptrType$28, ptrType$29, sliceType$13, ptrType$30, mapType$1, ptrType$31, ptrType$32, ptrType$33, ptrType$34, sliceType$14, mapType$2, ptrType$35, sliceType$15, ptrType$36, angleToClock, CmdIneffKind, countSameCmds, isSelectionChanger;
 	fmt = $packages["fmt"];
 	repcmd = $packages["github.com/icza/screp/rep/repcmd"];
 	repcore = $packages["github.com/icza/screp/rep/repcore"];
@@ -28736,9 +28808,9 @@ $packages["github.com/icza/screp/rep"] = (function() {
 	Replay = $pkg.Replay = $newType(0, $kindStruct, "rep.Replay", true, "github.com/icza/screp/rep", true, function(Header_, Commands_, MapData_, Computed_) {
 		this.$val = this;
 		if (arguments.length === 0) {
-			this.Header = ptrType$15.nil;
-			this.Commands = ptrType$5.nil;
-			this.MapData = ptrType$8.nil;
+			this.Header = ptrType$20.nil;
+			this.Commands = ptrType$6.nil;
+			this.MapData = ptrType$9.nil;
 			this.Computed = ptrType.nil;
 			return;
 		}
@@ -28747,29 +28819,43 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		this.MapData = MapData_;
 		this.Computed = Computed_;
 	});
-	MapData = $pkg.MapData = $newType(0, $kindStruct, "rep.MapData", true, "github.com/icza/screp/rep", true, function(Version_, TileSet_, Name_, Description_, Tiles_, MineralFields_, Geysers_, StartLocations_, Debug_) {
+	MapData = $pkg.MapData = $newType(0, $kindStruct, "rep.MapData", true, "github.com/icza/screp/rep", true, function(Version_, TileSet_, Name_, Description_, PlayerOwners_, PlayerSides_, Tiles_, MineralFields_, Geysers_, StartLocations_, Debug_) {
 		this.$val = this;
 		if (arguments.length === 0) {
 			this.Version = 0;
-			this.TileSet = ptrType$17.nil;
+			this.TileSet = ptrType$22.nil;
 			this.Name = "";
 			this.Description = "";
-			this.Tiles = sliceType$8.nil;
-			this.MineralFields = sliceType$9.nil;
-			this.Geysers = sliceType$9.nil;
-			this.StartLocations = sliceType$10.nil;
-			this.Debug = ptrType$18.nil;
+			this.PlayerOwners = sliceType$8.nil;
+			this.PlayerSides = sliceType$9.nil;
+			this.Tiles = sliceType$10.nil;
+			this.MineralFields = sliceType$11.nil;
+			this.Geysers = sliceType$11.nil;
+			this.StartLocations = sliceType$12.nil;
+			this.Debug = ptrType$25.nil;
 			return;
 		}
 		this.Version = Version_;
 		this.TileSet = TileSet_;
 		this.Name = Name_;
 		this.Description = Description_;
+		this.PlayerOwners = PlayerOwners_;
+		this.PlayerSides = PlayerSides_;
 		this.Tiles = Tiles_;
 		this.MineralFields = MineralFields_;
 		this.Geysers = Geysers_;
 		this.StartLocations = StartLocations_;
 		this.Debug = Debug_;
+	});
+	Resource = $pkg.Resource = $newType(0, $kindStruct, "rep.Resource", true, "github.com/icza/screp/rep", true, function(Point_, Amount_) {
+		this.$val = this;
+		if (arguments.length === 0) {
+			this.Point = new repcore.Point.ptr(0, 0);
+			this.Amount = 0;
+			return;
+		}
+		this.Point = Point_;
+		this.Amount = Amount_;
 	});
 	StartLocation = $pkg.StartLocation = $newType(0, $kindStruct, "rep.StartLocation", true, "github.com/icza/screp/rep", true, function(Point_, SlotID_) {
 		this.$val = this;
@@ -28792,26 +28878,26 @@ $packages["github.com/icza/screp/rep"] = (function() {
 	Header = $pkg.Header = $newType(0, $kindStruct, "rep.Header", true, "github.com/icza/screp/rep", true, function(Engine_, Frames_, StartTime_, Title_, RawTitle_, MapWidth_, MapHeight_, AvailSlotsCount_, Speed_, Type_, SubType_, Host_, RawHost_, Map_, RawMap_, Slots_, OrigPlayers_, Players_, PIDPlayers_, Debug_) {
 		this.$val = this;
 		if (arguments.length === 0) {
-			this.Engine = ptrType$19.nil;
+			this.Engine = ptrType$26.nil;
 			this.Frames = 0;
-			this.StartTime = new time.Time.ptr(new $Uint64(0, 0), new $Int64(0, 0), ptrType$20.nil);
+			this.StartTime = new time.Time.ptr(new $Uint64(0, 0), new $Int64(0, 0), ptrType$27.nil);
 			this.Title = "";
 			this.RawTitle = "";
 			this.MapWidth = 0;
 			this.MapHeight = 0;
 			this.AvailSlotsCount = 0;
-			this.Speed = ptrType$21.nil;
-			this.Type = ptrType$22.nil;
+			this.Speed = ptrType$28.nil;
+			this.Type = ptrType$29.nil;
 			this.SubType = 0;
 			this.Host = "";
 			this.RawHost = "";
 			this.Map = "";
 			this.RawMap = "";
-			this.Slots = sliceType$11.nil;
-			this.OrigPlayers = sliceType$11.nil;
-			this.Players = sliceType$11.nil;
+			this.Slots = sliceType$13.nil;
+			this.OrigPlayers = sliceType$13.nil;
+			this.Players = sliceType$13.nil;
 			this.PIDPlayers = false;
-			this.Debug = ptrType$23.nil;
+			this.Debug = ptrType$30.nil;
 			return;
 		}
 		this.Engine = Engine_;
@@ -28840,12 +28926,12 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		if (arguments.length === 0) {
 			this.SlotID = 0;
 			this.ID = 0;
-			this.Type = ptrType$24.nil;
-			this.Race = ptrType$25.nil;
+			this.Type = ptrType$31.nil;
+			this.Race = ptrType$32.nil;
 			this.Team = 0;
 			this.Name = "";
 			this.RawName = "";
-			this.Color = ptrType$26.nil;
+			this.Color = ptrType$33.nil;
 			this.Observer = false;
 			return;
 		}
@@ -28863,7 +28949,7 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		this.$val = this;
 		if (arguments.length === 0) {
 			this.Data = sliceType$4.nil;
-			this.Fields = sliceType$12.nil;
+			this.Fields = sliceType$14.nil;
 			return;
 		}
 		this.Data = Data_;
@@ -28881,12 +28967,13 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		this.Length = Length_;
 		this.Name = Name_;
 	});
-	Computed = $pkg.Computed = $newType(0, $kindStruct, "rep.Computed", true, "github.com/icza/screp/rep", true, function(LeaveGameCmds_, ChatCmds_, WinnerTeam_, PlayerDescs_, PIDPlayerDescs_) {
+	Computed = $pkg.Computed = $newType(0, $kindStruct, "rep.Computed", true, "github.com/icza/screp/rep", true, function(LeaveGameCmds_, ChatCmds_, WinnerTeam_, RepSaverPlayerID_, PlayerDescs_, PIDPlayerDescs_) {
 		this.$val = this;
 		if (arguments.length === 0) {
 			this.LeaveGameCmds = sliceType.nil;
 			this.ChatCmds = sliceType$1.nil;
 			this.WinnerTeam = 0;
+			this.RepSaverPlayerID = ptrType$3.nil;
 			this.PlayerDescs = sliceType$2.nil;
 			this.PIDPlayerDescs = false;
 			return;
@@ -28894,6 +28981,7 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		this.LeaveGameCmds = LeaveGameCmds_;
 		this.ChatCmds = ChatCmds_;
 		this.WinnerTeam = WinnerTeam_;
+		this.RepSaverPlayerID = RepSaverPlayerID_;
 		this.PlayerDescs = PlayerDescs_;
 		this.PIDPlayerDescs = PIDPlayerDescs_;
 	});
@@ -28906,7 +28994,7 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			this.APM = 0;
 			this.EffectiveCmdCount = 0;
 			this.EAPM = 0;
-			this.StartLocation = ptrType$4.nil;
+			this.StartLocation = ptrType$5.nil;
 			this.StartDirection = 0;
 			return;
 		}
@@ -28923,8 +29011,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		this.$val = this;
 		if (arguments.length === 0) {
 			this.Cmds = sliceType$3.nil;
-			this.ParseErrCmds = sliceType$13.nil;
-			this.Debug = ptrType$29.nil;
+			this.ParseErrCmds = sliceType$15.nil;
+			this.Debug = ptrType$36.nil;
 			return;
 		}
 		this.Cmds = Cmds_;
@@ -28950,8 +29038,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 	wrapper = $newType(0, $kindStruct, "rep.wrapper", true, "github.com/icza/screp/rep", false, function(p_, pd_) {
 		this.$val = this;
 		if (arguments.length === 0) {
-			this.p = ptrType$9.nil;
-			this.pd = ptrType$3.nil;
+			this.p = ptrType$11.nil;
+			this.pd = ptrType$4.nil;
 			return;
 		}
 		this.p = p_;
@@ -28962,58 +29050,67 @@ $packages["github.com/icza/screp/rep"] = (function() {
 	sliceType = $sliceType(ptrType$1);
 	ptrType$2 = $ptrType(repcmd.ChatCmd);
 	sliceType$1 = $sliceType(ptrType$2);
-	ptrType$3 = $ptrType(PlayerDesc);
-	sliceType$2 = $sliceType(ptrType$3);
-	ptrType$4 = $ptrType(repcore.Point);
-	ptrType$5 = $ptrType(Commands);
+	ptrType$3 = $ptrType($Uint8);
+	ptrType$4 = $ptrType(PlayerDesc);
+	sliceType$2 = $sliceType(ptrType$4);
+	ptrType$5 = $ptrType(repcore.Point);
+	ptrType$6 = $ptrType(Commands);
 	sliceType$3 = $sliceType(repcmd.Cmd);
-	ptrType$6 = $ptrType(pidCmdsWrapper);
-	ptrType$7 = $ptrType(repcmd.BuildCmd);
-	ptrType$8 = $ptrType(MapData);
-	ptrType$9 = $ptrType(Player);
+	ptrType$7 = $ptrType(pidCmdsWrapper);
+	ptrType$8 = $ptrType(repcmd.BuildCmd);
+	ptrType$9 = $ptrType(MapData);
+	ptrType$10 = $ptrType(repcmd.TrainCmd);
+	ptrType$11 = $ptrType(Player);
 	sliceType$4 = $sliceType($Uint8);
-	ptrType$10 = $ptrType(repcmd.AllianceCmd);
+	ptrType$12 = $ptrType(repcmd.AllianceCmd);
 	sliceType$5 = $sliceType(wrapper);
+	ptrType$13 = $ptrType(repcmd.Base);
+	ptrType$14 = $ptrType(repcmd.LeaveReason);
+	ptrType$15 = $ptrType(repcmd.Type);
 	sliceType$6 = $sliceType($emptyInterface);
 	sliceType$7 = $sliceType($Int32);
-	ptrType$11 = $ptrType(strings.Builder);
-	ptrType$12 = $ptrType(repcmd.TargetedOrderCmd);
-	ptrType$13 = $ptrType(repcmd.HotkeyCmd);
-	ptrType$14 = $ptrType(repcmd.Order);
-	ptrType$15 = $ptrType(Header);
+	ptrType$16 = $ptrType(strings.Builder);
+	ptrType$17 = $ptrType(repcmd.TargetedOrderCmd);
+	ptrType$18 = $ptrType(repcmd.HotkeyCmd);
+	ptrType$19 = $ptrType(repcmd.Order);
+	ptrType$20 = $ptrType(Header);
 	mapType = $mapType($Uint8, $Int);
-	ptrType$16 = $ptrType(Replay);
-	ptrType$17 = $ptrType(repcore.TileSet);
-	sliceType$8 = $sliceType($Uint16);
-	sliceType$9 = $sliceType(repcore.Point);
-	sliceType$10 = $sliceType(StartLocation);
-	ptrType$18 = $ptrType(MapDataDebug);
-	ptrType$19 = $ptrType(repcore.Engine);
-	ptrType$20 = $ptrType(time.Location);
-	ptrType$21 = $ptrType(repcore.Speed);
-	ptrType$22 = $ptrType(repcore.GameType);
-	sliceType$11 = $sliceType(ptrType$9);
-	ptrType$23 = $ptrType(HeaderDebug);
-	mapType$1 = $mapType($Uint8, ptrType$9);
-	ptrType$24 = $ptrType(repcore.PlayerType);
-	ptrType$25 = $ptrType(repcore.Race);
-	ptrType$26 = $ptrType(repcore.Color);
-	ptrType$27 = $ptrType(DebugFieldDescriptor);
-	sliceType$12 = $sliceType(ptrType$27);
-	mapType$2 = $mapType($Uint8, ptrType$3);
-	ptrType$28 = $ptrType(repcmd.ParseErrCmd);
-	sliceType$13 = $sliceType(ptrType$28);
-	ptrType$29 = $ptrType(CommandsDebug);
+	ptrType$21 = $ptrType(Replay);
+	ptrType$22 = $ptrType(repcore.TileSet);
+	ptrType$23 = $ptrType(repcore.PlayerOwner);
+	sliceType$8 = $sliceType(ptrType$23);
+	ptrType$24 = $ptrType(repcore.PlayerSide);
+	sliceType$9 = $sliceType(ptrType$24);
+	sliceType$10 = $sliceType($Uint16);
+	sliceType$11 = $sliceType(Resource);
+	sliceType$12 = $sliceType(StartLocation);
+	ptrType$25 = $ptrType(MapDataDebug);
+	ptrType$26 = $ptrType(repcore.Engine);
+	ptrType$27 = $ptrType(time.Location);
+	ptrType$28 = $ptrType(repcore.Speed);
+	ptrType$29 = $ptrType(repcore.GameType);
+	sliceType$13 = $sliceType(ptrType$11);
+	ptrType$30 = $ptrType(HeaderDebug);
+	mapType$1 = $mapType($Uint8, ptrType$11);
+	ptrType$31 = $ptrType(repcore.PlayerType);
+	ptrType$32 = $ptrType(repcore.Race);
+	ptrType$33 = $ptrType(repcore.Color);
+	ptrType$34 = $ptrType(DebugFieldDescriptor);
+	sliceType$14 = $sliceType(ptrType$34);
+	mapType$2 = $mapType($Uint8, ptrType$4);
+	ptrType$35 = $ptrType(repcmd.ParseErrCmd);
+	sliceType$15 = $sliceType(ptrType$35);
+	ptrType$36 = $ptrType(CommandsDebug);
 	Replay.ptr.prototype.Compute = function() {
-		var _entry, _entry$1, _entry$2, _entry$3, _entry$4, _i, _i$1, _i$2, _i$3, _i$4, _i$5, _i$6, _key, _key$1, _key$2, _key$3, _keys, _q, _r, _r$1, _r$2, _ref, _ref$1, _ref$2, _ref$3, _ref$4, _ref$5, _ref$6, _ref$7, _tmp, _tmp$1, baseCmd, baseCmd$1, c, cmd, cmd$1, cmds, cx, cy, i, i$1, i$2, j, mins, numPlayers, p, p$1, p$2, pd, pd$1, pd$2, pd$3, pd$4, pid, pidBuilds, pidCmdsWrapper$1, pidCmdsWrappers, pidPlayerDescs, players, pt, r, sls, x, x$1, x$2, x$3, x$4, x$5, $s, $r;
-		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; _entry = $f._entry; _entry$1 = $f._entry$1; _entry$2 = $f._entry$2; _entry$3 = $f._entry$3; _entry$4 = $f._entry$4; _i = $f._i; _i$1 = $f._i$1; _i$2 = $f._i$2; _i$3 = $f._i$3; _i$4 = $f._i$4; _i$5 = $f._i$5; _i$6 = $f._i$6; _key = $f._key; _key$1 = $f._key$1; _key$2 = $f._key$2; _key$3 = $f._key$3; _keys = $f._keys; _q = $f._q; _r = $f._r; _r$1 = $f._r$1; _r$2 = $f._r$2; _ref = $f._ref; _ref$1 = $f._ref$1; _ref$2 = $f._ref$2; _ref$3 = $f._ref$3; _ref$4 = $f._ref$4; _ref$5 = $f._ref$5; _ref$6 = $f._ref$6; _ref$7 = $f._ref$7; _tmp = $f._tmp; _tmp$1 = $f._tmp$1; baseCmd = $f.baseCmd; baseCmd$1 = $f.baseCmd$1; c = $f.c; cmd = $f.cmd; cmd$1 = $f.cmd$1; cmds = $f.cmds; cx = $f.cx; cy = $f.cy; i = $f.i; i$1 = $f.i$1; i$2 = $f.i$2; j = $f.j; mins = $f.mins; numPlayers = $f.numPlayers; p = $f.p; p$1 = $f.p$1; p$2 = $f.p$2; pd = $f.pd; pd$1 = $f.pd$1; pd$2 = $f.pd$2; pd$3 = $f.pd$3; pd$4 = $f.pd$4; pid = $f.pid; pidBuilds = $f.pidBuilds; pidCmdsWrapper$1 = $f.pidCmdsWrapper$1; pidCmdsWrappers = $f.pidCmdsWrappers; pidPlayerDescs = $f.pidPlayerDescs; players = $f.players; pt = $f.pt; r = $f.r; sls = $f.sls; x = $f.x; x$1 = $f.x$1; x$2 = $f.x$2; x$3 = $f.x$3; x$4 = $f.x$4; x$5 = $f.x$5; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
+		var _1, _entry, _entry$1, _entry$2, _entry$3, _entry$4, _i, _i$1, _i$2, _i$3, _i$4, _i$5, _i$6, _key, _key$1, _key$2, _key$3, _keys, _q, _r, _r$1, _r$2, _ref, _ref$1, _ref$2, _ref$3, _ref$4, _ref$5, _ref$6, _ref$7, _tmp, _tmp$1, baseCmd, baseCmd$1, c, cmd, cmd$1, cmds, cx, cy, i, i$1, i$2, j, mins, numPlayers, p, p$1, p$2, pd, pd$1, pd$2, pd$3, pd$4, pid, pidBuilds, pidCmdsWrapper$1, pidCmdsWrappers, pidPlayerDescs, players, pt, r, sls, x, x$1, x$2, x$3, x$4, x$5, x$6, x$7, $s, $r;
+		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; _1 = $f._1; _entry = $f._entry; _entry$1 = $f._entry$1; _entry$2 = $f._entry$2; _entry$3 = $f._entry$3; _entry$4 = $f._entry$4; _i = $f._i; _i$1 = $f._i$1; _i$2 = $f._i$2; _i$3 = $f._i$3; _i$4 = $f._i$4; _i$5 = $f._i$5; _i$6 = $f._i$6; _key = $f._key; _key$1 = $f._key$1; _key$2 = $f._key$2; _key$3 = $f._key$3; _keys = $f._keys; _q = $f._q; _r = $f._r; _r$1 = $f._r$1; _r$2 = $f._r$2; _ref = $f._ref; _ref$1 = $f._ref$1; _ref$2 = $f._ref$2; _ref$3 = $f._ref$3; _ref$4 = $f._ref$4; _ref$5 = $f._ref$5; _ref$6 = $f._ref$6; _ref$7 = $f._ref$7; _tmp = $f._tmp; _tmp$1 = $f._tmp$1; baseCmd = $f.baseCmd; baseCmd$1 = $f.baseCmd$1; c = $f.c; cmd = $f.cmd; cmd$1 = $f.cmd$1; cmds = $f.cmds; cx = $f.cx; cy = $f.cy; i = $f.i; i$1 = $f.i$1; i$2 = $f.i$2; j = $f.j; mins = $f.mins; numPlayers = $f.numPlayers; p = $f.p; p$1 = $f.p$1; p$2 = $f.p$2; pd = $f.pd; pd$1 = $f.pd$1; pd$2 = $f.pd$2; pd$3 = $f.pd$3; pd$4 = $f.pd$4; pid = $f.pid; pidBuilds = $f.pidBuilds; pidCmdsWrapper$1 = $f.pidCmdsWrapper$1; pidCmdsWrappers = $f.pidCmdsWrappers; pidPlayerDescs = $f.pidPlayerDescs; players = $f.players; pt = $f.pt; r = $f.r; sls = $f.sls; x = $f.x; x$1 = $f.x$1; x$2 = $f.x$2; x$3 = $f.x$3; x$4 = $f.x$4; x$5 = $f.x$5; x$6 = $f.x$6; x$7 = $f.x$7; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
 		r = this;
 		if (!(r.Computed === ptrType.nil)) {
 			$s = -1; return;
 		}
 		players = r.Header.Players;
 		numPlayers = players.$length;
-		c = new Computed.ptr(sliceType.nil, sliceType$1.nil, 0, $makeSlice(sliceType$2, numPlayers), ((numPlayers < 0 || numPlayers > 2147483647) ? $throwRuntimeError("makemap: size out of range") : {}));
+		c = new Computed.ptr(sliceType.nil, sliceType$1.nil, 0, ptrType$3.nil, $makeSlice(sliceType$2, numPlayers), ((numPlayers < 0 || numPlayers > 2147483647) ? $throwRuntimeError("makemap: size out of range") : {}));
 		r.Computed = c;
 		_ref = players;
 		_i = 0;
@@ -29021,14 +29118,14 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			if (!(_i < _ref.$length)) { break; }
 			i = _i;
 			p = ((_i < 0 || _i >= _ref.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref.$array[_ref.$offset + _i]);
-			pd = new PlayerDesc.ptr(p.ID, 0, 0, 0, 0, 0, ptrType$4.nil, 0);
+			pd = new PlayerDesc.ptr(p.ID, 0, 0, 0, 0, 0, ptrType$5.nil, 0);
 			(x = c.PlayerDescs, ((i < 0 || i >= x.$length) ? ($throwRuntimeError("index out of range"), undefined) : x.$array[x.$offset + i] = pd));
 			_key = p.ID; (c.PIDPlayerDescs || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key)] = { k: _key, v: pd };
 			_i++;
 		}
-		/* */ if (!(r.Commands === ptrType$5.nil)) { $s = 1; continue; }
+		/* */ if (!(r.Commands === ptrType$6.nil)) { $s = 1; continue; }
 		/* */ $s = 2; continue;
-		/* if (!(r.Commands === ptrType$5.nil)) { */ case 1:
+		/* if (!(r.Commands === ptrType$6.nil)) { */ case 1:
 			pidCmdsWrappers = ((numPlayers < 0 || numPlayers > 2147483647) ? $throwRuntimeError("makemap: size out of range") : {});
 			pidBuilds = ((numPlayers < 0 || numPlayers > 2147483647) ? $throwRuntimeError("makemap: size out of range") : {});
 			_ref$1 = players;
@@ -29047,12 +29144,12 @@ $packages["github.com/icza/screp/rep"] = (function() {
 				cmd = ((_i$2 < 0 || _i$2 >= _ref$2.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref$2.$array[_ref$2.$offset + _i$2]);
 				_r = cmd.BaseCmd(); /* */ $s = 5; case 5: if($c) { $c = false; _r = _r.$blk(); } if (_r && _r.$blk !== undefined) { break s; }
 				baseCmd = _r;
-				pd$1 = (_entry = c.PIDPlayerDescs[$Uint8.keyFor(baseCmd.PlayerID)], _entry !== undefined ? _entry.v : ptrType$3.nil);
-				/* */ if (!(pd$1 === ptrType$3.nil)) { $s = 6; continue; }
+				pd$1 = (_entry = c.PIDPlayerDescs[$Uint8.keyFor(baseCmd.PlayerID)], _entry !== undefined ? _entry.v : ptrType$4.nil);
+				/* */ if (!(pd$1 === ptrType$4.nil)) { $s = 6; continue; }
 				/* */ $s = 7; continue;
-				/* if (!(pd$1 === ptrType$3.nil)) { */ case 6:
+				/* if (!(pd$1 === ptrType$4.nil)) { */ case 6:
 					pd$1.CmdCount = pd$1.CmdCount + (1) >>> 0;
-					pidCmdsWrapper$1 = (_entry$1 = pidCmdsWrappers[$Uint8.keyFor(baseCmd.PlayerID)], _entry$1 !== undefined ? _entry$1.v : ptrType$6.nil);
+					pidCmdsWrapper$1 = (_entry$1 = pidCmdsWrappers[$Uint8.keyFor(baseCmd.PlayerID)], _entry$1 !== undefined ? _entry$1.v : ptrType$7.nil);
 					pidCmdsWrapper$1.cmds = $append(pidCmdsWrapper$1.cmds, cmd);
 					_r$1 = CmdIneffKind(pidCmdsWrapper$1.cmds, pidCmdsWrapper$1.cmds.$length - 1 >> 0); /* */ $s = 8; case 8: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
 					baseCmd.IneffKind = _r$1;
@@ -29067,13 +29164,16 @@ $packages["github.com/icza/screp/rep"] = (function() {
 				} else if ($assertType(_ref$3, ptrType$2, true)[1]) {
 					x$2 = _ref$3.$val;
 					c.ChatCmds = $append(c.ChatCmds, x$2);
-				} else if ($assertType(_ref$3, ptrType$7, true)[1]) {
+				} else if ($assertType(_ref$3, ptrType$8, true)[1]) {
 					x$3 = _ref$3.$val;
 					_key$2 = baseCmd.PlayerID; (pidBuilds || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key$2)] = { k: _key$2, v: (_entry$2 = pidBuilds[$Uint8.keyFor(baseCmd.PlayerID)], _entry$2 !== undefined ? _entry$2.v : 0) + (1) >> 0 };
 				}
 				_i$2++;
 			$s = 3; continue;
 			case 4:
+			if (c.ChatCmds.$length > 0) {
+				c.RepSaverPlayerID = (x$4 = (x$5 = c.ChatCmds, (0 >= x$5.$length ? ($throwRuntimeError("index out of range"), undefined) : x$5.$array[x$5.$offset + 0])), (x$4.$ptr_PlayerID || (x$4.$ptr_PlayerID = new ptrType$3(function() { return this.$target.Base.PlayerID; }, function($v) { this.$target.Base.PlayerID = $v; }, x$4))));
+			}
 			pidPlayerDescs = ((numPlayers < 0 || numPlayers > 2147483647) ? $throwRuntimeError("makemap: size out of range") : {});
 			_ref$4 = c.PIDPlayerDescs;
 			_i$3 = 0;
@@ -29098,8 +29198,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 				cmd$1 = ((i$1 < 0 || i$1 >= cmds.$length) ? ($throwRuntimeError("index out of range"), undefined) : cmds.$array[cmds.$offset + i$1]);
 				_r$2 = cmd$1.BaseCmd(); /* */ $s = 11; case 11: if($c) { $c = false; _r$2 = _r$2.$blk(); } if (_r$2 && _r$2.$blk !== undefined) { break s; }
 				baseCmd$1 = _r$2;
-				pd$3 = (_entry$4 = pidPlayerDescs[$Uint8.keyFor(baseCmd$1.PlayerID)], _entry$4 !== undefined ? _entry$4.v : ptrType$3.nil);
-				if (pd$3 === ptrType$3.nil) {
+				pd$3 = (_entry$4 = pidPlayerDescs[$Uint8.keyFor(baseCmd$1.PlayerID)], _entry$4 !== undefined ? _entry$4.v : ptrType$4.nil);
+				if (pd$3 === ptrType$4.nil) {
 					i$1 = i$1 - (1) >> 0;
 					/* continue; */ $s = 9; continue;
 				}
@@ -29129,15 +29229,21 @@ $packages["github.com/icza/screp/rep"] = (function() {
 				pd$4.EAPM = (((pd$4.EffectiveCmdCount) / mins + 0.5 >> 0));
 				_i$4++;
 			}
-			/* */ if (r.Header.Type === repcore.GameTypeMelee) { $s = 12; continue; }
-			/* */ $s = 13; continue;
-			/* if (r.Header.Type === repcore.GameTypeMelee) { */ case 12:
-				r.detectMeleeObservers(pidBuilds);
-				$r = r.computeMeleeTeams(); /* */ $s = 14; case 14: if($c) { $c = false; $r = $r.$blk(); } if ($r && $r.$blk !== undefined) { break s; }
-			/* } */ case 13:
+				_1 = r.Header.Type;
+				/* */ if (_1 === (repcore.GameTypeUMS)) { $s = 13; continue; }
+				/* */ if (_1 === (repcore.GameTypeMelee)) { $s = 14; continue; }
+				/* */ $s = 15; continue;
+				/* if (_1 === (repcore.GameTypeUMS)) { */ case 13:
+					$r = r.computeUMSTeams(); /* */ $s = 16; case 16: if($c) { $c = false; $r = $r.$blk(); } if ($r && $r.$blk !== undefined) { break s; }
+					$s = 15; continue;
+				/* } else if (_1 === (repcore.GameTypeMelee)) { */ case 14:
+					r.detectMeleeObservers(pidBuilds);
+					$r = r.computeMeleeTeams(); /* */ $s = 17; case 17: if($c) { $c = false; $r = $r.$blk(); } if ($r && $r.$blk !== undefined) { break s; }
+				/* } */ case 15:
+			case 12:
 			r.computeWinners();
 		/* } */ case 2:
-		if (!(r.MapData === ptrType$8.nil)) {
+		if (!(r.MapData === ptrType$9.nil)) {
 			_tmp = ((r.Header.MapWidth * 16 << 16 >>> 16));
 			_tmp$1 = ((r.Header.MapHeight * 16 << 16 >>> 16));
 			cx = _tmp;
@@ -29156,8 +29262,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 					j = _i$6;
 					if (p$2.SlotID === ((((j < 0 || j >= sls.$length) ? ($throwRuntimeError("index out of range"), undefined) : sls.$array[sls.$offset + j]).SlotID << 16 >>> 16))) {
 						pt = ((j < 0 || j >= sls.$length) ? ($throwRuntimeError("index out of range"), undefined) : sls.$array[sls.$offset + j]).Point;
-						(x$4 = c.PlayerDescs, ((i$2 < 0 || i$2 >= x$4.$length) ? ($throwRuntimeError("index out of range"), undefined) : x$4.$array[x$4.$offset + i$2])).StartLocation = pt;
-						(x$5 = c.PlayerDescs, ((i$2 < 0 || i$2 >= x$5.$length) ? ($throwRuntimeError("index out of range"), undefined) : x$5.$array[x$5.$offset + i$2])).StartDirection = angleToClock(math.Atan2(cy - (pt.Y), (pt.X) - cx));
+						(x$6 = c.PlayerDescs, ((i$2 < 0 || i$2 >= x$6.$length) ? ($throwRuntimeError("index out of range"), undefined) : x$6.$array[x$6.$offset + i$2])).StartLocation = pt;
+						(x$7 = c.PlayerDescs, ((i$2 < 0 || i$2 >= x$7.$length) ? ($throwRuntimeError("index out of range"), undefined) : x$7.$array[x$7.$offset + i$2])).StartDirection = angleToClock(math.Atan2(cy - (pt.Y), (pt.X) - cx));
 						break;
 					}
 					_i$6++;
@@ -29166,9 +29272,93 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			}
 		}
 		$s = -1; return;
-		/* */ } return; } if ($f === undefined) { $f = { $blk: Replay.ptr.prototype.Compute }; } $f._entry = _entry; $f._entry$1 = _entry$1; $f._entry$2 = _entry$2; $f._entry$3 = _entry$3; $f._entry$4 = _entry$4; $f._i = _i; $f._i$1 = _i$1; $f._i$2 = _i$2; $f._i$3 = _i$3; $f._i$4 = _i$4; $f._i$5 = _i$5; $f._i$6 = _i$6; $f._key = _key; $f._key$1 = _key$1; $f._key$2 = _key$2; $f._key$3 = _key$3; $f._keys = _keys; $f._q = _q; $f._r = _r; $f._r$1 = _r$1; $f._r$2 = _r$2; $f._ref = _ref; $f._ref$1 = _ref$1; $f._ref$2 = _ref$2; $f._ref$3 = _ref$3; $f._ref$4 = _ref$4; $f._ref$5 = _ref$5; $f._ref$6 = _ref$6; $f._ref$7 = _ref$7; $f._tmp = _tmp; $f._tmp$1 = _tmp$1; $f.baseCmd = baseCmd; $f.baseCmd$1 = baseCmd$1; $f.c = c; $f.cmd = cmd; $f.cmd$1 = cmd$1; $f.cmds = cmds; $f.cx = cx; $f.cy = cy; $f.i = i; $f.i$1 = i$1; $f.i$2 = i$2; $f.j = j; $f.mins = mins; $f.numPlayers = numPlayers; $f.p = p; $f.p$1 = p$1; $f.p$2 = p$2; $f.pd = pd; $f.pd$1 = pd$1; $f.pd$2 = pd$2; $f.pd$3 = pd$3; $f.pd$4 = pd$4; $f.pid = pid; $f.pidBuilds = pidBuilds; $f.pidCmdsWrapper$1 = pidCmdsWrapper$1; $f.pidCmdsWrappers = pidCmdsWrappers; $f.pidPlayerDescs = pidPlayerDescs; $f.players = players; $f.pt = pt; $f.r = r; $f.sls = sls; $f.x = x; $f.x$1 = x$1; $f.x$2 = x$2; $f.x$3 = x$3; $f.x$4 = x$4; $f.x$5 = x$5; $f.$s = $s; $f.$r = $r; return $f;
+		/* */ } return; } if ($f === undefined) { $f = { $blk: Replay.ptr.prototype.Compute }; } $f._1 = _1; $f._entry = _entry; $f._entry$1 = _entry$1; $f._entry$2 = _entry$2; $f._entry$3 = _entry$3; $f._entry$4 = _entry$4; $f._i = _i; $f._i$1 = _i$1; $f._i$2 = _i$2; $f._i$3 = _i$3; $f._i$4 = _i$4; $f._i$5 = _i$5; $f._i$6 = _i$6; $f._key = _key; $f._key$1 = _key$1; $f._key$2 = _key$2; $f._key$3 = _key$3; $f._keys = _keys; $f._q = _q; $f._r = _r; $f._r$1 = _r$1; $f._r$2 = _r$2; $f._ref = _ref; $f._ref$1 = _ref$1; $f._ref$2 = _ref$2; $f._ref$3 = _ref$3; $f._ref$4 = _ref$4; $f._ref$5 = _ref$5; $f._ref$6 = _ref$6; $f._ref$7 = _ref$7; $f._tmp = _tmp; $f._tmp$1 = _tmp$1; $f.baseCmd = baseCmd; $f.baseCmd$1 = baseCmd$1; $f.c = c; $f.cmd = cmd; $f.cmd$1 = cmd$1; $f.cmds = cmds; $f.cx = cx; $f.cy = cy; $f.i = i; $f.i$1 = i$1; $f.i$2 = i$2; $f.j = j; $f.mins = mins; $f.numPlayers = numPlayers; $f.p = p; $f.p$1 = p$1; $f.p$2 = p$2; $f.pd = pd; $f.pd$1 = pd$1; $f.pd$2 = pd$2; $f.pd$3 = pd$3; $f.pd$4 = pd$4; $f.pid = pid; $f.pidBuilds = pidBuilds; $f.pidCmdsWrapper$1 = pidCmdsWrapper$1; $f.pidCmdsWrappers = pidCmdsWrappers; $f.pidPlayerDescs = pidPlayerDescs; $f.players = players; $f.pt = pt; $f.r = r; $f.sls = sls; $f.x = x; $f.x$1 = x$1; $f.x$2 = x$2; $f.x$3 = x$3; $f.x$4 = x$4; $f.x$5 = x$5; $f.x$6 = x$6; $f.x$7 = x$7; $f.$s = $s; $f.$r = $r; return $f;
 	};
 	Replay.prototype.Compute = function() { return this.$val.Compute(); };
+	Replay.ptr.prototype.computeUMSTeams = function() {
+		var _entry, _entry$1, _i, _i$1, _i$2, _key, _key$1, _r, _r$1, _ref, _ref$1, _ref$2, _ref$3, _tmp, _tmp$1, cmd, i, noObsCandidates, obsCandidateIDs, p, p$1, playerCandidateIDs, playerTrainBuildCount, players, r, $s, $r;
+		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; _entry = $f._entry; _entry$1 = $f._entry$1; _i = $f._i; _i$1 = $f._i$1; _i$2 = $f._i$2; _key = $f._key; _key$1 = $f._key$1; _r = $f._r; _r$1 = $f._r$1; _ref = $f._ref; _ref$1 = $f._ref$1; _ref$2 = $f._ref$2; _ref$3 = $f._ref$3; _tmp = $f._tmp; _tmp$1 = $f._tmp$1; cmd = $f.cmd; i = $f.i; noObsCandidates = $f.noObsCandidates; obsCandidateIDs = $f.obsCandidateIDs; p = $f.p; p$1 = $f.p$1; playerCandidateIDs = $f.playerCandidateIDs; playerTrainBuildCount = $f.playerTrainBuildCount; players = $f.players; r = $f.r; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
+		r = this;
+		if (r.Commands === ptrType$6.nil) {
+			$s = -1; return;
+		}
+		players = r.Header.Players;
+		if (players.$length < 2) {
+			$s = -1; return;
+		}
+		_tmp = $makeMap($Uint8.keyFor, []);
+		_tmp$1 = $makeMap($Uint8.keyFor, []);
+		playerCandidateIDs = _tmp;
+		obsCandidateIDs = _tmp$1;
+		_ref = players;
+		_i = 0;
+		while (true) {
+			if (!(_i < _ref.$length)) { break; }
+			i = _i;
+			p = ((_i < 0 || _i >= _ref.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref.$array[_ref.$offset + _i]);
+			if (!(p.Type === repcore.PlayerTypeHuman)) {
+				$s = -1; return;
+			}
+			if (i < 2) {
+				if (!((p.Team === 1))) {
+					$s = -1; return;
+				}
+				_key = p.ID; (playerCandidateIDs || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key)] = { k: _key, v: true };
+			} else {
+				if (p.Team === 1) {
+					$s = -1; return;
+				}
+				_key$1 = p.ID; (obsCandidateIDs || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key$1)] = { k: _key$1, v: true };
+			}
+			_i++;
+		}
+		playerTrainBuildCount = 0;
+		noObsCandidates = $keys(obsCandidateIDs).length === 0;
+		_ref$1 = r.Commands.Cmds;
+		_i$1 = 0;
+		/* while (true) { */ case 1:
+			/* if (!(_i$1 < _ref$1.$length)) { break; } */ if(!(_i$1 < _ref$1.$length)) { $s = 2; continue; }
+			cmd = ((_i$1 < 0 || _i$1 >= _ref$1.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref$1.$array[_ref$1.$offset + _i$1]);
+			_ref$2 = cmd;
+			/* */ if ($assertType(_ref$2, ptrType$10, true)[1] || $assertType(_ref$2, ptrType$8, true)[1]) { $s = 3; continue; }
+			/* */ $s = 4; continue;
+			/* switch (0) { default: if ($assertType(_ref$2, ptrType$10, true)[1] || $assertType(_ref$2, ptrType$8, true)[1]) { */ case 3:
+				_r = cmd.BaseCmd(); /* */ $s = 8; case 8: if($c) { $c = false; _r = _r.$blk(); } if (_r && _r.$blk !== undefined) { break s; }
+				/* */ if ((_entry = playerCandidateIDs[$Uint8.keyFor(_r.PlayerID)], _entry !== undefined ? _entry.v : false)) { $s = 5; continue; }
+				_r$1 = cmd.BaseCmd(); /* */ $s = 9; case 9: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
+				/* */ if ((_entry$1 = obsCandidateIDs[$Uint8.keyFor(_r$1.PlayerID)], _entry$1 !== undefined ? _entry$1.v : false)) { $s = 6; continue; }
+				/* */ $s = 7; continue;
+				/* if ((_entry = playerCandidateIDs[$Uint8.keyFor(_r.PlayerID)], _entry !== undefined ? _entry.v : false)) { */ case 5:
+					playerTrainBuildCount = playerTrainBuildCount + (1) >> 0;
+					if (noObsCandidates) {
+						/* break; */ $s = 4; continue;
+					}
+					$s = 7; continue;
+				/* } else if ((_entry$1 = obsCandidateIDs[$Uint8.keyFor(_r$1.PlayerID)], _entry$1 !== undefined ? _entry$1.v : false)) { */ case 6:
+					$s = -1; return;
+				/* } */ case 7:
+			/* } } */ case 4:
+			_i$1++;
+		$s = 1; continue;
+		case 2:
+		if (playerTrainBuildCount === 0) {
+			$s = -1; return;
+		}
+		(0 >= players.$length ? ($throwRuntimeError("index out of range"), undefined) : players.$array[players.$offset + 0]).Team = 1;
+		(1 >= players.$length ? ($throwRuntimeError("index out of range"), undefined) : players.$array[players.$offset + 1]).Team = 2;
+		_ref$3 = $subslice(players, 2);
+		_i$2 = 0;
+		while (true) {
+			if (!(_i$2 < _ref$3.$length)) { break; }
+			p$1 = ((_i$2 < 0 || _i$2 >= _ref$3.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref$3.$array[_ref$3.$offset + _i$2]);
+			p$1.Team = 3;
+			p$1.Observer = true;
+			_i$2++;
+		}
+		$s = -1; return;
+		/* */ } return; } if ($f === undefined) { $f = { $blk: Replay.ptr.prototype.computeUMSTeams }; } $f._entry = _entry; $f._entry$1 = _entry$1; $f._i = _i; $f._i$1 = _i$1; $f._i$2 = _i$2; $f._key = _key; $f._key$1 = _key$1; $f._r = _r; $f._r$1 = _r$1; $f._ref = _ref; $f._ref$1 = _ref$1; $f._ref$2 = _ref$2; $f._ref$3 = _ref$3; $f._tmp = _tmp; $f._tmp$1 = _tmp$1; $f.cmd = cmd; $f.i = i; $f.noObsCandidates = noObsCandidates; $f.obsCandidateIDs = obsCandidateIDs; $f.p = p; $f.p$1 = p$1; $f.playerCandidateIDs = playerCandidateIDs; $f.playerTrainBuildCount = playerTrainBuildCount; $f.players = players; $f.r = r; $f.$s = $s; $f.$r = $r; return $f;
+	};
+	Replay.prototype.computeUMSTeams = function() { return this.$val.computeUMSTeams(); };
 	Replay.ptr.prototype.detectMeleeObservers = function(pidBuilds) {
 		var _entry, _i, _i$1, _ref, _ref$1, c, i, numObs, p, p$1, pidBuilds, r, x;
 		r = this;
@@ -29209,7 +29399,7 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		}
 		c = r.Computed;
 		pds = c.PlayerDescs;
-		nonObsPlayer = ptrType$9.nil;
+		nonObsPlayer = ptrType$11.nil;
 		_ref = players;
 		_i = 0;
 		while (true) {
@@ -29219,7 +29409,7 @@ $packages["github.com/icza/screp/rep"] = (function() {
 				_i++;
 				continue;
 			}
-			if (nonObsPlayer === ptrType$9.nil) {
+			if (nonObsPlayer === ptrType$11.nil) {
 				nonObsPlayer = p;
 			} else {
 				if (!((p.Team === nonObsPlayer.Team))) {
@@ -29253,12 +29443,12 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			/* if (_r.Frame > frameLimit) { */ case 3:
 				/* break; */ $s = 2; continue;
 			/* } */ case 4:
-			_tuple = $assertType(cmd, ptrType$10, true);
+			_tuple = $assertType(cmd, ptrType$12, true);
 			ac = _tuple[0];
 			ok = _tuple[1];
 			if (ok) {
-				p$2 = (_entry = r.Header.PIDPlayers[$Uint8.keyFor(ac.Base.PlayerID)], _entry !== undefined ? _entry.v : ptrType$9.nil);
-				if (!(p$2 === ptrType$9.nil) && p$2.Observer) {
+				p$2 = (_entry = r.Header.PIDPlayers[$Uint8.keyFor(ac.Base.PlayerID)], _entry !== undefined ? _entry.v : ptrType$11.nil);
+				if (!(p$2 === ptrType$11.nil) && p$2.Observer) {
 					_i$2++;
 					/* continue; */ $s = 1; continue;
 				}
@@ -29291,8 +29481,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			}
 			pid = _entry$1.k;
 			slotIDs = _entry$1.v;
-			p$4 = (_entry$2 = r.Header.PIDPlayers[$Uint8.keyFor(pid)], _entry$2 !== undefined ? _entry$2.v : ptrType$9.nil);
-			if (!(p$4 === ptrType$9.nil)) {
+			p$4 = (_entry$2 = r.Header.PIDPlayers[$Uint8.keyFor(pid)], _entry$2 !== undefined ? _entry$2.v : ptrType$11.nil);
+			if (!(p$4 === ptrType$11.nil)) {
 				_key$3 = ((p$4.SlotID << 24 >>> 24)); (slotIDSlotIDs || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key$3)] = { k: _key$3, v: slotIDs };
 			}
 			_i$4++;
@@ -29309,8 +29499,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			}
 			pid$1 = _entry$3.k;
 			slotIDs$1 = _entry$3.v;
-			p$5 = (_entry$4 = r.Header.PIDPlayers[$Uint8.keyFor(pid$1)], _entry$4 !== undefined ? _entry$4.v : ptrType$9.nil);
-			if (p$5 === ptrType$9.nil) {
+			p$5 = (_entry$4 = r.Header.PIDPlayers[$Uint8.keyFor(pid$1)], _entry$4 !== undefined ? _entry$4.v : ptrType$11.nil);
+			if (p$5 === ptrType$11.nil) {
 				_i$5++;
 				continue;
 			}
@@ -29324,8 +29514,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 					_i$6++;
 					continue;
 				}
-				p$6 = (_entry$5 = slotIDPlayers[$Uint8.keyFor(slotIDB)], _entry$5 !== undefined ? _entry$5.v : ptrType$9.nil);
-				if (p$6 === ptrType$9.nil || p$6.Observer) {
+				p$6 = (_entry$5 = slotIDPlayers[$Uint8.keyFor(slotIDB)], _entry$5 !== undefined ? _entry$5.v : ptrType$11.nil);
+				if (p$6 === ptrType$11.nil || p$6.Observer) {
 					_i$6++;
 					continue;
 				}
@@ -29377,8 +29567,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 				while (true) {
 					if (!(_i$10 < _ref$10.$length)) { break; }
 					slotID = ((_i$10 < 0 || _i$10 >= _ref$10.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref$10.$array[_ref$10.$offset + _i$10]);
-					p$9 = (_entry$8 = slotIDPlayers[$Uint8.keyFor(slotID)], _entry$8 !== undefined ? _entry$8.v : ptrType$9.nil);
-					if (!(p$9 === ptrType$9.nil) && !p$9.Observer) {
+					p$9 = (_entry$8 = slotIDPlayers[$Uint8.keyFor(slotID)], _entry$8 !== undefined ? _entry$8.v : ptrType$11.nil);
+					if (!(p$9 === ptrType$11.nil) && !p$9.Observer) {
 						p$9.Team = team;
 					}
 					_i$10++;
@@ -29425,110 +29615,125 @@ $packages["github.com/icza/screp/rep"] = (function() {
 	};
 	Replay.prototype.computeMeleeTeams = function() { return this.$val.computeMeleeTeams(); };
 	Replay.ptr.prototype.computeWinners = function() {
-		var _entry, _entry$1, _entry$2, _entry$3, _entry$4, _entry$5, _entry$6, _entry$7, _entry$8, _i, _i$1, _i$2, _i$3, _i$4, _key, _key$1, _keys, _keys$1, _keys$2, _ref, _ref$1, _ref$2, _ref$3, _ref$4, _tmp, _tmp$1, _tmp$2, _tmp$3, c, count, lgcmd, loserTeam, maxSize, maxTeam, p, p$1, p1, p2, r, repSaver, size, size$1, team, team$1, teamSizes, x, x$1, x$2;
+		var _entry, _entry$1, _entry$10, _entry$11, _entry$2, _entry$3, _entry$4, _entry$5, _entry$6, _entry$7, _entry$8, _entry$9, _i, _i$1, _i$2, _i$3, _i$4, _i$5, _key, _key$1, _key$2, _keys, _keys$1, _keys$2, _ref, _ref$1, _ref$2, _ref$3, _ref$4, _ref$5, _tmp, _tmp$1, _tmp$2, _tmp$3, c, count, leaveGameCmds, lgcmd, lgcmd$1, maxSize, maxTeam, nonObsPlayersCount, p, p$1, playerID, r, repSaver, size, size$1, team, team$1, teamCompsCount, teamSizes, x;
 		r = this;
 		c = r.Computed;
+		nonObsPlayersCount = 0;
 		teamSizes = $makeMap($Uint8.keyFor, []);
+		teamCompsCount = $makeMap($Uint8.keyFor, []);
 		_ref = r.Header.Players;
 		_i = 0;
 		while (true) {
 			if (!(_i < _ref.$length)) { break; }
 			p = ((_i < 0 || _i >= _ref.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref.$array[_ref.$offset + _i]);
 			if (!p.Observer) {
-				_key = p.Team; (teamSizes || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key)] = { k: _key, v: (_entry = teamSizes[$Uint8.keyFor(p.Team)], _entry !== undefined ? _entry.v : 0) + (1) >> 0 };
+				if (p.Type === repcore.PlayerTypeComputer) {
+					_key = p.Team; (teamCompsCount || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key)] = { k: _key, v: (_entry = teamCompsCount[$Uint8.keyFor(p.Team)], _entry !== undefined ? _entry.v : 0) + (1) >> 0 };
+				} else {
+					_key$1 = p.Team; (teamSizes || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key$1)] = { k: _key$1, v: (_entry$1 = teamSizes[$Uint8.keyFor(p.Team)], _entry$1 !== undefined ? _entry$1.v : 0) + (1) >> 0 };
+				}
+				nonObsPlayersCount = nonObsPlayersCount + (1) >> 0;
 			}
 			_i++;
 		}
-		_ref$1 = c.LeaveGameCmds;
+		_ref$1 = teamCompsCount;
 		_i$1 = 0;
+		_keys = $keys(_ref$1);
 		while (true) {
-			if (!(_i$1 < _ref$1.$length)) { break; }
-			lgcmd = ((_i$1 < 0 || _i$1 >= _ref$1.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref$1.$array[_ref$1.$offset + _i$1]);
-			p$1 = (_entry$1 = r.Header.PIDPlayers[$Uint8.keyFor(lgcmd.Base.PlayerID)], _entry$1 !== undefined ? _entry$1.v : ptrType$9.nil);
-			if (!(p$1 === ptrType$9.nil)) {
-				_key$1 = p$1.Team; (teamSizes || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key$1)] = { k: _key$1, v: (_entry$2 = teamSizes[$Uint8.keyFor(p$1.Team)], _entry$2 !== undefined ? _entry$2.v : 0) - (1) >> 0 };
+			if (!(_i$1 < _keys.length)) { break; }
+			_entry$2 = _ref$1[_keys[_i$1]];
+			if (_entry$2 === undefined) {
+				_i$1++;
+				continue;
+			}
+			team = _entry$2.k;
+			if ((_entry$3 = teamSizes[$Uint8.keyFor(team)], _entry$3 !== undefined ? _entry$3.v : 0) === 0) {
+				return;
 			}
 			_i$1++;
 		}
-		if (c.LeaveGameCmds.$length > 0) {
-			_tmp = 0;
-			_tmp$1 = -1;
-			maxTeam = _tmp;
-			maxSize = _tmp$1;
-			_ref$2 = teamSizes;
-			_i$2 = 0;
-			_keys = $keys(_ref$2);
+		leaveGameCmds = $makeSlice(sliceType, 0, (c.LeaveGameCmds.$length + 1 >> 0));
+		_ref$2 = c.LeaveGameCmds;
+		_i$2 = 0;
+		while (true) {
+			if (!(_i$2 < _ref$2.$length)) { break; }
+			lgcmd = ((_i$2 < 0 || _i$2 >= _ref$2.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref$2.$array[_ref$2.$offset + _i$2]);
+			p$1 = (_entry$4 = r.Header.PIDPlayers[$Uint8.keyFor(lgcmd.Base.PlayerID)], _entry$4 !== undefined ? _entry$4.v : ptrType$11.nil);
+			if (!(p$1 === ptrType$11.nil)) {
+				if (!p$1.Observer) {
+					leaveGameCmds = $append(leaveGameCmds, lgcmd);
+				}
+			}
+			_i$2++;
+		}
+		if (!(c.RepSaverPlayerID === ptrType$3.nil)) {
+			repSaver = (_entry$5 = r.Header.PIDPlayers[$Uint8.keyFor(c.RepSaverPlayerID.$get())], _entry$5 !== undefined ? _entry$5.v : ptrType$11.nil);
+			if (!(repSaver === ptrType$11.nil) && !repSaver.Observer) {
+				leaveGameCmds = $append(leaveGameCmds, new repcmd.LeaveGameCmd.ptr(new repcmd.Base.ptr(0, repSaver.ID, ptrType$15.nil, 0), ptrType$14.nil));
+			}
+		}
+		_ref$3 = leaveGameCmds;
+		_i$3 = 0;
+		while (true) {
+			if (!(_i$3 < _ref$3.$length)) { break; }
+			lgcmd$1 = ((_i$3 < 0 || _i$3 >= _ref$3.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref$3.$array[_ref$3.$offset + _i$3]);
+			_key$2 = (_entry$6 = r.Header.PIDPlayers[$Uint8.keyFor(lgcmd$1.Base.PlayerID)], _entry$6 !== undefined ? _entry$6.v : ptrType$11.nil).Team; (teamSizes || $throwRuntimeError("assignment to entry in nil map"))[$Uint8.keyFor(_key$2)] = { k: _key$2, v: (_entry$8 = teamSizes[$Uint8.keyFor((_entry$7 = r.Header.PIDPlayers[$Uint8.keyFor(lgcmd$1.Base.PlayerID)], _entry$7 !== undefined ? _entry$7.v : ptrType$11.nil).Team)], _entry$8 !== undefined ? _entry$8.v : 0) - (1) >> 0 };
+			_i$3++;
+		}
+		if ($keys(teamSizes).length < 2 || (leaveGameCmds.$length === 0)) {
+			return;
+		}
+		_tmp = 0;
+		_tmp$1 = -1;
+		maxTeam = _tmp;
+		maxSize = _tmp$1;
+		_ref$4 = teamSizes;
+		_i$4 = 0;
+		_keys$1 = $keys(_ref$4);
+		while (true) {
+			if (!(_i$4 < _keys$1.length)) { break; }
+			_entry$9 = _ref$4[_keys$1[_i$4]];
+			if (_entry$9 === undefined) {
+				_i$4++;
+				continue;
+			}
+			team$1 = _entry$9.k;
+			size = _entry$9.v;
+			if (size > maxSize) {
+				_tmp$2 = team$1;
+				_tmp$3 = size;
+				maxTeam = _tmp$2;
+				maxSize = _tmp$3;
+			}
+			_i$4++;
+		}
+		if (maxSize > 0) {
+			count = 0;
+			_ref$5 = teamSizes;
+			_i$5 = 0;
+			_keys$2 = $keys(_ref$5);
 			while (true) {
-				if (!(_i$2 < _keys.length)) { break; }
-				_entry$3 = _ref$2[_keys[_i$2]];
-				if (_entry$3 === undefined) {
-					_i$2++;
+				if (!(_i$5 < _keys$2.length)) { break; }
+				_entry$10 = _ref$5[_keys$2[_i$5]];
+				if (_entry$10 === undefined) {
+					_i$5++;
 					continue;
 				}
-				team = _entry$3.k;
-				size = _entry$3.v;
-				if (size > maxSize) {
-					_tmp$2 = team;
-					_tmp$3 = size;
-					maxTeam = _tmp$2;
-					maxSize = _tmp$3;
+				size$1 = _entry$10.v;
+				if (size$1 === maxSize) {
+					count = count + (1) >> 0;
 				}
-				_i$2++;
+				_i$5++;
 			}
-			if (maxSize > 0) {
-				count = 0;
-				_ref$3 = teamSizes;
-				_i$3 = 0;
-				_keys$1 = $keys(_ref$3);
-				while (true) {
-					if (!(_i$3 < _keys$1.length)) { break; }
-					_entry$4 = _ref$3[_keys$1[_i$3]];
-					if (_entry$4 === undefined) {
-						_i$3++;
-						continue;
-					}
-					size$1 = _entry$4.v;
-					if (size$1 === maxSize) {
-						count = count + (1) >> 0;
-					}
-					_i$3++;
-				}
-				if (count === 1) {
-					c.WinnerTeam = maxTeam;
-					return;
-				}
-			}
-		}
-		if ((c.LeaveGameCmds.$length === 0) && c.ChatCmds.$length > 0 && ($keys(teamSizes).length === 2)) {
-			repSaver = (_entry$5 = r.Header.PIDPlayers[$Uint8.keyFor((x = c.ChatCmds, (0 >= x.$length ? ($throwRuntimeError("index out of range"), undefined) : x.$array[x.$offset + 0])).Base.PlayerID)], _entry$5 !== undefined ? _entry$5.v : ptrType$9.nil);
-			if (!(repSaver === ptrType$9.nil)) {
-				loserTeam = repSaver.Team;
-				_ref$4 = teamSizes;
-				_i$4 = 0;
-				_keys$2 = $keys(_ref$4);
-				while (true) {
-					if (!(_i$4 < _keys$2.length)) { break; }
-					_entry$6 = _ref$4[_keys$2[_i$4]];
-					if (_entry$6 === undefined) {
-						_i$4++;
-						continue;
-					}
-					team$1 = _entry$6.k;
-					if (!((team$1 === loserTeam))) {
-						c.WinnerTeam = team$1;
-						return;
-					}
-					_i$4++;
-				}
-			}
-		}
-		if ((r.Header.Players.$length === 2) && (c.LeaveGameCmds.$length === 2)) {
-			p1 = (_entry$7 = r.Header.PIDPlayers[$Uint8.keyFor((x$1 = c.LeaveGameCmds, (0 >= x$1.$length ? ($throwRuntimeError("index out of range"), undefined) : x$1.$array[x$1.$offset + 0])).Base.PlayerID)], _entry$7 !== undefined ? _entry$7.v : ptrType$9.nil);
-			p2 = (_entry$8 = r.Header.PIDPlayers[$Uint8.keyFor((x$2 = c.LeaveGameCmds, (1 >= x$2.$length ? ($throwRuntimeError("index out of range"), undefined) : x$2.$array[x$2.$offset + 1])).Base.PlayerID)], _entry$8 !== undefined ? _entry$8.v : ptrType$9.nil);
-			if (!(p1 === ptrType$9.nil) && !(p2 === ptrType$9.nil) && !((p1.Team === p2.Team))) {
-				c.WinnerTeam = p2.Team;
+			if (count === 1) {
+				c.WinnerTeam = maxTeam;
 				return;
 			}
+		}
+		if (leaveGameCmds.$length === nonObsPlayersCount) {
+			playerID = (x = leaveGameCmds.$length - 1 >> 0, ((x < 0 || x >= leaveGameCmds.$length) ? ($throwRuntimeError("index out of range"), undefined) : leaveGameCmds.$array[leaveGameCmds.$offset + x])).Base.PlayerID;
+			c.WinnerTeam = (_entry$11 = r.Header.PIDPlayers[$Uint8.keyFor(playerID)], _entry$11 !== undefined ? _entry$11.v : ptrType$11.nil).Team;
+			return;
 		}
 	};
 	Replay.prototype.computeWinners = function() { return this.$val.computeWinners(); };
@@ -29549,6 +29754,23 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		}
 		return hour;
 	};
+	MapData.ptr.prototype.MaxHumanPlayers = function() {
+		var _i, _ref, count, md, owner;
+		count = 0;
+		md = this;
+		_ref = md.PlayerOwners;
+		_i = 0;
+		while (true) {
+			if (!(_i < _ref.$length)) { break; }
+			owner = ((_i < 0 || _i >= _ref.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref.$array[_ref.$offset + _i]);
+			if (owner === repcore.PlayerOwnerHumanOpenSlot) {
+				count = count + (1) >> 0;
+			}
+			_i++;
+		}
+		return count;
+	};
+	MapData.prototype.MaxHumanPlayers = function() { return this.$val.MaxHumanPlayers(); };
 	Header.ptr.prototype.Duration = function() {
 		var h;
 		h = this;
@@ -29598,7 +29820,7 @@ $packages["github.com/icza/screp/rep"] = (function() {
 	Header.ptr.prototype.PlayerNames = function() {
 		var _i, _ref, buf, h, i, p, prevTeam;
 		h = this;
-		buf = new strings.Builder.ptr(ptrType$11.nil, sliceType$4.nil);
+		buf = new strings.Builder.ptr(ptrType$16.nil, sliceType$4.nil);
 		prevTeam = 0;
 		_ref = h.Players;
 		_i = 0;
@@ -29663,8 +29885,8 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			if ((_2 === (26)) || (_2 === (43))) {
 				$s = -1; return 3;
 			} else if ((_2 === (21)) || (_2 === (97))) {
-				_tmp = $assertType(cmd, ptrType$12).Order.ID;
-				_tmp$1 = $assertType(prevCmd, ptrType$12).Order.ID;
+				_tmp = $assertType(cmd, ptrType$17).Order.ID;
+				_tmp$1 = $assertType(prevCmd, ptrType$17).Order.ID;
 				oid = _tmp;
 				prevOid = _tmp$1;
 				if (oid === prevOid) {
@@ -29688,11 +29910,11 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		/* */ $s = 12; continue;
 		/* if (_v) { */ case 11:
 			doubleTap = false;
-			_tuple = $assertType(cmd, ptrType$13, true);
+			_tuple = $assertType(cmd, ptrType$18, true);
 			he = _tuple[0];
 			ok = _tuple[1];
 			if (ok) {
-				_tuple$1 = $assertType(prevCmd, ptrType$13, true);
+				_tuple$1 = $assertType(prevCmd, ptrType$18, true);
 				he2 = _tuple$1[0];
 				ok2 = _tuple$1[1];
 				if (ok2) {
@@ -29700,7 +29922,7 @@ $packages["github.com/icza/screp/rep"] = (function() {
 						doubleTap = true;
 						if (i >= 2) {
 							prevPrevCmd = (x$1 = i - 2 >> 0, ((x$1 < 0 || x$1 >= cmds.$length) ? ($throwRuntimeError("index out of range"), undefined) : cmds.$array[cmds.$offset + x$1]));
-							_tuple$2 = $assertType(prevPrevCmd, ptrType$13, true);
+							_tuple$2 = $assertType(prevPrevCmd, ptrType$18, true);
 							he3 = _tuple$2[0];
 							ok3 = _tuple$2[1];
 							if (ok3 && (he3.HotkeyType.ID === 1) && (he3.Group === he.Group) && (he2.Base.Frame - he3.Base.Frame >> 0) <= 8) {
@@ -29719,17 +29941,17 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			if ((_4 === (35)) || (_4 === (53)) || (_4 === (50)) || (_4 === (42)) || (_4 === (90)) || (_4 === (47)) || (_4 === (52)) || (_4 === (24)) || (_4 === (25)) || (_4 === (46)) || (_4 === (49)) || (_4 === (51))) {
 				$s = -1; return 5;
 			} else if (_4 === (12)) {
-				bc = $assertType(cmd, ptrType$7);
-				if (!(bc.Order === ptrType$14.nil) && !((bc.Order.ID === 31))) {
+				bc = $assertType(cmd, ptrType$8);
+				if (!(bc.Order === ptrType$19.nil) && !((bc.Order.ID === 31))) {
 					$s = -1; return 5;
 				}
 			}
 		}
-		_tuple$3 = $assertType(cmd, ptrType$13, true);
+		_tuple$3 = $assertType(cmd, ptrType$18, true);
 		he$1 = _tuple$3[0];
 		ok$1 = _tuple$3[1];
 		if (ok$1 && !((he$1.HotkeyType.ID === 1))) {
-			_tuple$4 = $assertType(prevCmd, ptrType$13, true);
+			_tuple$4 = $assertType(prevCmd, ptrType$18, true);
 			he2$1 = _tuple$4[0];
 			ok2$1 = _tuple$4[1];
 			if (ok2$1 && (he2$1.HotkeyType.ID === he$1.HotkeyType.ID)) {
@@ -29784,7 +30006,7 @@ $packages["github.com/icza/screp/rep"] = (function() {
 			if ((_1 === (9)) || (_1 === (10)) || (_1 === (11)) || (_1 === (99)) || (_1 === (100)) || (_1 === (101))) {
 				$s = -1; return true;
 			} else if (_1 === (19)) {
-				if ($assertType(cmd, ptrType$13).HotkeyType.ID === 1) {
+				if ($assertType(cmd, ptrType$18).HotkeyType.ID === 1) {
 					$s = -1; return true;
 				}
 			}
@@ -29801,23 +30023,25 @@ $packages["github.com/icza/screp/rep"] = (function() {
 		return ((((pd.CmdCount - pd.EffectiveCmdCount >>> 0)) * 100 / (pd.CmdCount) + 0.5 >> 0));
 	};
 	PlayerDesc.prototype.Redundancy = function() { return this.$val.Redundancy(); };
-	ptrType$16.methods = [{prop: "Compute", name: "Compute", pkg: "", typ: $funcType([], [], false)}, {prop: "detectMeleeObservers", name: "detectMeleeObservers", pkg: "github.com/icza/screp/rep", typ: $funcType([mapType], [], false)}, {prop: "computeMeleeTeams", name: "computeMeleeTeams", pkg: "github.com/icza/screp/rep", typ: $funcType([], [], false)}, {prop: "computeWinners", name: "computeWinners", pkg: "github.com/icza/screp/rep", typ: $funcType([], [], false)}];
-	ptrType$15.methods = [{prop: "Duration", name: "Duration", pkg: "", typ: $funcType([], [time.Duration], false)}, {prop: "MapSize", name: "MapSize", pkg: "", typ: $funcType([], [$String], false)}, {prop: "Matchup", name: "Matchup", pkg: "", typ: $funcType([], [$String], false)}, {prop: "PlayerNames", name: "PlayerNames", pkg: "", typ: $funcType([], [$String], false)}];
-	ptrType$3.methods = [{prop: "Redundancy", name: "Redundancy", pkg: "", typ: $funcType([], [$Int], false)}];
-	Replay.init("", [{prop: "Header", name: "Header", embedded: false, exported: true, typ: ptrType$15, tag: ""}, {prop: "Commands", name: "Commands", embedded: false, exported: true, typ: ptrType$5, tag: ""}, {prop: "MapData", name: "MapData", embedded: false, exported: true, typ: ptrType$8, tag: ""}, {prop: "Computed", name: "Computed", embedded: false, exported: true, typ: ptrType, tag: ""}]);
-	MapData.init("", [{prop: "Version", name: "Version", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "TileSet", name: "TileSet", embedded: false, exported: true, typ: ptrType$17, tag: ""}, {prop: "Name", name: "Name", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "Description", name: "Description", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "Tiles", name: "Tiles", embedded: false, exported: true, typ: sliceType$8, tag: ""}, {prop: "MineralFields", name: "MineralFields", embedded: false, exported: true, typ: sliceType$9, tag: ""}, {prop: "Geysers", name: "Geysers", embedded: false, exported: true, typ: sliceType$9, tag: ""}, {prop: "StartLocations", name: "StartLocations", embedded: false, exported: true, typ: sliceType$10, tag: ""}, {prop: "Debug", name: "Debug", embedded: false, exported: true, typ: ptrType$18, tag: "json:\"-\""}]);
+	ptrType$21.methods = [{prop: "Compute", name: "Compute", pkg: "", typ: $funcType([], [], false)}, {prop: "computeUMSTeams", name: "computeUMSTeams", pkg: "github.com/icza/screp/rep", typ: $funcType([], [], false)}, {prop: "detectMeleeObservers", name: "detectMeleeObservers", pkg: "github.com/icza/screp/rep", typ: $funcType([mapType], [], false)}, {prop: "computeMeleeTeams", name: "computeMeleeTeams", pkg: "github.com/icza/screp/rep", typ: $funcType([], [], false)}, {prop: "computeWinners", name: "computeWinners", pkg: "github.com/icza/screp/rep", typ: $funcType([], [], false)}];
+	ptrType$9.methods = [{prop: "MaxHumanPlayers", name: "MaxHumanPlayers", pkg: "", typ: $funcType([], [$Int], false)}];
+	ptrType$20.methods = [{prop: "Duration", name: "Duration", pkg: "", typ: $funcType([], [time.Duration], false)}, {prop: "MapSize", name: "MapSize", pkg: "", typ: $funcType([], [$String], false)}, {prop: "Matchup", name: "Matchup", pkg: "", typ: $funcType([], [$String], false)}, {prop: "PlayerNames", name: "PlayerNames", pkg: "", typ: $funcType([], [$String], false)}];
+	ptrType$4.methods = [{prop: "Redundancy", name: "Redundancy", pkg: "", typ: $funcType([], [$Int], false)}];
+	Replay.init("", [{prop: "Header", name: "Header", embedded: false, exported: true, typ: ptrType$20, tag: ""}, {prop: "Commands", name: "Commands", embedded: false, exported: true, typ: ptrType$6, tag: ""}, {prop: "MapData", name: "MapData", embedded: false, exported: true, typ: ptrType$9, tag: ""}, {prop: "Computed", name: "Computed", embedded: false, exported: true, typ: ptrType, tag: ""}]);
+	MapData.init("", [{prop: "Version", name: "Version", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "TileSet", name: "TileSet", embedded: false, exported: true, typ: ptrType$22, tag: ""}, {prop: "Name", name: "Name", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "Description", name: "Description", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "PlayerOwners", name: "PlayerOwners", embedded: false, exported: true, typ: sliceType$8, tag: ""}, {prop: "PlayerSides", name: "PlayerSides", embedded: false, exported: true, typ: sliceType$9, tag: ""}, {prop: "Tiles", name: "Tiles", embedded: false, exported: true, typ: sliceType$10, tag: ""}, {prop: "MineralFields", name: "MineralFields", embedded: false, exported: true, typ: sliceType$11, tag: ""}, {prop: "Geysers", name: "Geysers", embedded: false, exported: true, typ: sliceType$11, tag: ""}, {prop: "StartLocations", name: "StartLocations", embedded: false, exported: true, typ: sliceType$12, tag: ""}, {prop: "Debug", name: "Debug", embedded: false, exported: true, typ: ptrType$25, tag: "json:\"-\""}]);
+	Resource.init("", [{prop: "Point", name: "Point", embedded: true, exported: true, typ: repcore.Point, tag: ""}, {prop: "Amount", name: "Amount", embedded: false, exported: true, typ: $Uint32, tag: ""}]);
 	StartLocation.init("", [{prop: "Point", name: "Point", embedded: true, exported: true, typ: repcore.Point, tag: ""}, {prop: "SlotID", name: "SlotID", embedded: false, exported: true, typ: $Uint8, tag: ""}]);
 	MapDataDebug.init("", [{prop: "Data", name: "Data", embedded: false, exported: true, typ: sliceType$4, tag: ""}]);
-	Header.init("", [{prop: "Engine", name: "Engine", embedded: false, exported: true, typ: ptrType$19, tag: ""}, {prop: "Frames", name: "Frames", embedded: false, exported: true, typ: repcore.Frame, tag: ""}, {prop: "StartTime", name: "StartTime", embedded: false, exported: true, typ: time.Time, tag: ""}, {prop: "Title", name: "Title", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "RawTitle", name: "RawTitle", embedded: false, exported: true, typ: $String, tag: "json:\"-\""}, {prop: "MapWidth", name: "MapWidth", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "MapHeight", name: "MapHeight", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "AvailSlotsCount", name: "AvailSlotsCount", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "Speed", name: "Speed", embedded: false, exported: true, typ: ptrType$21, tag: ""}, {prop: "Type", name: "Type", embedded: false, exported: true, typ: ptrType$22, tag: ""}, {prop: "SubType", name: "SubType", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "Host", name: "Host", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "RawHost", name: "RawHost", embedded: false, exported: true, typ: $String, tag: "json:\"-\""}, {prop: "Map", name: "Map", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "RawMap", name: "RawMap", embedded: false, exported: true, typ: $String, tag: "json:\"-\""}, {prop: "Slots", name: "Slots", embedded: false, exported: true, typ: sliceType$11, tag: "json:\"-\""}, {prop: "OrigPlayers", name: "OrigPlayers", embedded: false, exported: true, typ: sliceType$11, tag: "json:\"-\""}, {prop: "Players", name: "Players", embedded: false, exported: true, typ: sliceType$11, tag: ""}, {prop: "PIDPlayers", name: "PIDPlayers", embedded: false, exported: true, typ: mapType$1, tag: "json:\"-\""}, {prop: "Debug", name: "Debug", embedded: false, exported: true, typ: ptrType$23, tag: "json:\"-\""}]);
-	Player.init("", [{prop: "SlotID", name: "SlotID", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "ID", name: "ID", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "Type", name: "Type", embedded: false, exported: true, typ: ptrType$24, tag: ""}, {prop: "Race", name: "Race", embedded: false, exported: true, typ: ptrType$25, tag: ""}, {prop: "Team", name: "Team", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "Name", name: "Name", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "RawName", name: "RawName", embedded: false, exported: true, typ: $String, tag: "json:\"-\""}, {prop: "Color", name: "Color", embedded: false, exported: true, typ: ptrType$26, tag: ""}, {prop: "Observer", name: "Observer", embedded: false, exported: true, typ: $Bool, tag: ""}]);
-	HeaderDebug.init("", [{prop: "Data", name: "Data", embedded: false, exported: true, typ: sliceType$4, tag: ""}, {prop: "Fields", name: "Fields", embedded: false, exported: true, typ: sliceType$12, tag: ""}]);
+	Header.init("", [{prop: "Engine", name: "Engine", embedded: false, exported: true, typ: ptrType$26, tag: ""}, {prop: "Frames", name: "Frames", embedded: false, exported: true, typ: repcore.Frame, tag: ""}, {prop: "StartTime", name: "StartTime", embedded: false, exported: true, typ: time.Time, tag: ""}, {prop: "Title", name: "Title", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "RawTitle", name: "RawTitle", embedded: false, exported: true, typ: $String, tag: "json:\"-\""}, {prop: "MapWidth", name: "MapWidth", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "MapHeight", name: "MapHeight", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "AvailSlotsCount", name: "AvailSlotsCount", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "Speed", name: "Speed", embedded: false, exported: true, typ: ptrType$28, tag: ""}, {prop: "Type", name: "Type", embedded: false, exported: true, typ: ptrType$29, tag: ""}, {prop: "SubType", name: "SubType", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "Host", name: "Host", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "RawHost", name: "RawHost", embedded: false, exported: true, typ: $String, tag: "json:\"-\""}, {prop: "Map", name: "Map", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "RawMap", name: "RawMap", embedded: false, exported: true, typ: $String, tag: "json:\"-\""}, {prop: "Slots", name: "Slots", embedded: false, exported: true, typ: sliceType$13, tag: "json:\"-\""}, {prop: "OrigPlayers", name: "OrigPlayers", embedded: false, exported: true, typ: sliceType$13, tag: "json:\"-\""}, {prop: "Players", name: "Players", embedded: false, exported: true, typ: sliceType$13, tag: ""}, {prop: "PIDPlayers", name: "PIDPlayers", embedded: false, exported: true, typ: mapType$1, tag: "json:\"-\""}, {prop: "Debug", name: "Debug", embedded: false, exported: true, typ: ptrType$30, tag: "json:\"-\""}]);
+	Player.init("", [{prop: "SlotID", name: "SlotID", embedded: false, exported: true, typ: $Uint16, tag: ""}, {prop: "ID", name: "ID", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "Type", name: "Type", embedded: false, exported: true, typ: ptrType$31, tag: ""}, {prop: "Race", name: "Race", embedded: false, exported: true, typ: ptrType$32, tag: ""}, {prop: "Team", name: "Team", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "Name", name: "Name", embedded: false, exported: true, typ: $String, tag: ""}, {prop: "RawName", name: "RawName", embedded: false, exported: true, typ: $String, tag: "json:\"-\""}, {prop: "Color", name: "Color", embedded: false, exported: true, typ: ptrType$33, tag: ""}, {prop: "Observer", name: "Observer", embedded: false, exported: true, typ: $Bool, tag: ""}]);
+	HeaderDebug.init("", [{prop: "Data", name: "Data", embedded: false, exported: true, typ: sliceType$4, tag: ""}, {prop: "Fields", name: "Fields", embedded: false, exported: true, typ: sliceType$14, tag: ""}]);
 	DebugFieldDescriptor.init("", [{prop: "Offset", name: "Offset", embedded: false, exported: true, typ: $Int, tag: ""}, {prop: "Length", name: "Length", embedded: false, exported: true, typ: $Int, tag: ""}, {prop: "Name", name: "Name", embedded: false, exported: true, typ: $String, tag: ""}]);
-	Computed.init("", [{prop: "LeaveGameCmds", name: "LeaveGameCmds", embedded: false, exported: true, typ: sliceType, tag: ""}, {prop: "ChatCmds", name: "ChatCmds", embedded: false, exported: true, typ: sliceType$1, tag: ""}, {prop: "WinnerTeam", name: "WinnerTeam", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "PlayerDescs", name: "PlayerDescs", embedded: false, exported: true, typ: sliceType$2, tag: ""}, {prop: "PIDPlayerDescs", name: "PIDPlayerDescs", embedded: false, exported: true, typ: mapType$2, tag: "json:\"-\""}]);
-	PlayerDesc.init("", [{prop: "PlayerID", name: "PlayerID", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "LastCmdFrame", name: "LastCmdFrame", embedded: false, exported: true, typ: repcore.Frame, tag: ""}, {prop: "CmdCount", name: "CmdCount", embedded: false, exported: true, typ: $Uint32, tag: ""}, {prop: "APM", name: "APM", embedded: false, exported: true, typ: $Int32, tag: ""}, {prop: "EffectiveCmdCount", name: "EffectiveCmdCount", embedded: false, exported: true, typ: $Uint32, tag: ""}, {prop: "EAPM", name: "EAPM", embedded: false, exported: true, typ: $Int32, tag: ""}, {prop: "StartLocation", name: "StartLocation", embedded: false, exported: true, typ: ptrType$4, tag: ""}, {prop: "StartDirection", name: "StartDirection", embedded: false, exported: true, typ: $Int32, tag: ""}]);
-	Commands.init("", [{prop: "Cmds", name: "Cmds", embedded: false, exported: true, typ: sliceType$3, tag: ""}, {prop: "ParseErrCmds", name: "ParseErrCmds", embedded: false, exported: true, typ: sliceType$13, tag: ""}, {prop: "Debug", name: "Debug", embedded: false, exported: true, typ: ptrType$29, tag: "json:\"-\""}]);
+	Computed.init("", [{prop: "LeaveGameCmds", name: "LeaveGameCmds", embedded: false, exported: true, typ: sliceType, tag: ""}, {prop: "ChatCmds", name: "ChatCmds", embedded: false, exported: true, typ: sliceType$1, tag: ""}, {prop: "WinnerTeam", name: "WinnerTeam", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "RepSaverPlayerID", name: "RepSaverPlayerID", embedded: false, exported: true, typ: ptrType$3, tag: ""}, {prop: "PlayerDescs", name: "PlayerDescs", embedded: false, exported: true, typ: sliceType$2, tag: ""}, {prop: "PIDPlayerDescs", name: "PIDPlayerDescs", embedded: false, exported: true, typ: mapType$2, tag: "json:\"-\""}]);
+	PlayerDesc.init("", [{prop: "PlayerID", name: "PlayerID", embedded: false, exported: true, typ: $Uint8, tag: ""}, {prop: "LastCmdFrame", name: "LastCmdFrame", embedded: false, exported: true, typ: repcore.Frame, tag: ""}, {prop: "CmdCount", name: "CmdCount", embedded: false, exported: true, typ: $Uint32, tag: ""}, {prop: "APM", name: "APM", embedded: false, exported: true, typ: $Int32, tag: ""}, {prop: "EffectiveCmdCount", name: "EffectiveCmdCount", embedded: false, exported: true, typ: $Uint32, tag: ""}, {prop: "EAPM", name: "EAPM", embedded: false, exported: true, typ: $Int32, tag: ""}, {prop: "StartLocation", name: "StartLocation", embedded: false, exported: true, typ: ptrType$5, tag: ""}, {prop: "StartDirection", name: "StartDirection", embedded: false, exported: true, typ: $Int32, tag: ""}]);
+	Commands.init("", [{prop: "Cmds", name: "Cmds", embedded: false, exported: true, typ: sliceType$3, tag: ""}, {prop: "ParseErrCmds", name: "ParseErrCmds", embedded: false, exported: true, typ: sliceType$15, tag: ""}, {prop: "Debug", name: "Debug", embedded: false, exported: true, typ: ptrType$36, tag: "json:\"-\""}]);
 	CommandsDebug.init("", [{prop: "Data", name: "Data", embedded: false, exported: true, typ: sliceType$4, tag: ""}]);
 	pidCmdsWrapper.init("github.com/icza/screp/rep", [{prop: "cmds", name: "cmds", embedded: false, exported: false, typ: sliceType$3, tag: ""}]);
-	wrapper.init("github.com/icza/screp/rep", [{prop: "p", name: "p", embedded: false, exported: false, typ: ptrType$9, tag: ""}, {prop: "pd", name: "pd", embedded: false, exported: false, typ: ptrType$3, tag: ""}]);
+	wrapper.init("github.com/icza/screp/rep", [{prop: "p", name: "p", embedded: false, exported: false, typ: ptrType$11, tag: ""}, {prop: "pd", name: "pd", embedded: false, exported: false, typ: ptrType$4, tag: ""}]);
 	$init = function() {
 		$pkg.$init = function() {};
 		/* */ var $f, $c = false, $s = 0, $r; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
@@ -34428,7 +34652,7 @@ $packages["log"] = (function() {
 	return $pkg;
 })();
 $packages["github.com/icza/screp/repparser"] = (function() {
-	var $pkg = {}, $init, bytes, binary, errors, fmt, rep, repcmd, repcore, repdecoder, korean, io, log, runtime, sort, time, utf8, sliceReader, Config, Section, sliceType, sliceType$1, ptrType, sliceType$2, ptrType$1, sliceType$3, ptrType$2, structType, sliceType$4, ptrType$3, ptrType$4, ptrType$5, ptrType$6, ptrType$7, ptrType$8, ptrType$9, ptrType$10, ptrType$11, sliceType$5, ptrType$12, ptrType$13, ptrType$14, ptrType$15, sliceType$6, ptrType$16, sliceType$7, ptrType$17, ptrType$18, ptrType$19, ptrType$20, sliceType$8, ptrType$21, ptrType$22, ptrType$23, ptrType$24, ptrType$25, ptrType$26, ptrType$27, sliceType$9, sliceType$10, sliceType$11, ptrType$28, ptrType$29, funcType, repIDs, headerFields, koreanDecoder, _r, ParseConfig, parseProtected, parse, parseReplayID, parseHeader, parseCommands, parseMapData, parsePlayerNames, parseSkin, parseLmts, parseBfix, parsePlayerColors, cString;
+	var $pkg = {}, $init, bytes, binary, errors, fmt, rep, repcmd, repcore, repdecoder, korean, io, log, runtime, sort, time, utf8, sliceReader, Config, Section, sliceType, sliceType$1, ptrType, sliceType$2, ptrType$1, sliceType$3, ptrType$2, structType, sliceType$4, ptrType$3, ptrType$4, ptrType$5, ptrType$6, ptrType$7, ptrType$8, ptrType$9, ptrType$10, ptrType$11, sliceType$5, ptrType$12, ptrType$13, ptrType$14, ptrType$15, sliceType$6, ptrType$16, sliceType$7, ptrType$17, ptrType$18, ptrType$19, ptrType$20, sliceType$8, ptrType$21, ptrType$22, ptrType$23, ptrType$24, ptrType$25, ptrType$26, ptrType$27, ptrType$28, sliceType$9, ptrType$29, sliceType$10, sliceType$11, sliceType$12, sliceType$13, ptrType$30, ptrType$31, funcType, repIDs, headerFields, koreanDecoder, _r, ParseConfig, parseProtected, parse, parseReplayID, parseHeader, parseCommands, parseMapData, parsePlayerNames, parseSkin, parseLmts, parseBfix, parsePlayerColors, cString;
 	bytes = $packages["bytes"];
 	binary = $packages["encoding/binary"];
 	errors = $packages["errors"];
@@ -34520,11 +34744,15 @@ $packages["github.com/icza/screp/repparser"] = (function() {
 	ptrType$25 = $ptrType(repcmd.Upgrade);
 	ptrType$26 = $ptrType(repcmd.Latency);
 	ptrType$27 = $ptrType(repcore.TileSet);
-	sliceType$9 = $sliceType($Uint16);
-	sliceType$10 = $sliceType(repcore.Point);
-	sliceType$11 = $sliceType(rep.StartLocation);
-	ptrType$28 = $ptrType(rep.MapDataDebug);
-	ptrType$29 = $ptrType(sliceReader);
+	ptrType$28 = $ptrType(repcore.PlayerOwner);
+	sliceType$9 = $sliceType(ptrType$28);
+	ptrType$29 = $ptrType(repcore.PlayerSide);
+	sliceType$10 = $sliceType(ptrType$29);
+	sliceType$11 = $sliceType($Uint16);
+	sliceType$12 = $sliceType(rep.Resource);
+	sliceType$13 = $sliceType(rep.StartLocation);
+	ptrType$30 = $ptrType(rep.MapDataDebug);
+	ptrType$31 = $ptrType(sliceReader);
 	funcType = $funcType([sliceType, ptrType$2, Config], [$error], false);
 	sliceReader.ptr.prototype.getByte = function() {
 		var _tmp, _tmp$1, r, sr, x, x$1;
@@ -35206,12 +35434,12 @@ $packages["github.com/icza/screp/repparser"] = (function() {
 		/* */ } return; } if ($f === undefined) { $f = { $blk: parseCommands }; } $f._1 = _1; $f._r$1 = _r$1; $f._r$10 = _r$10; $f._r$11 = _r$11; $f._r$12 = _r$12; $f._r$13 = _r$13; $f._r$14 = _r$14; $f._r$15 = _r$15; $f._r$16 = _r$16; $f._r$17 = _r$17; $f._r$18 = _r$18; $f._r$19 = _r$19; $f._r$2 = _r$2; $f._r$3 = _r$3; $f._r$4 = _r$4; $f._r$5 = _r$5; $f._r$6 = _r$6; $f._r$7 = _r$7; $f._r$8 = _r$8; $f._r$9 = _r$9; $f._tmp = _tmp; $f._tmp$1 = _tmp$1; $f._tuple = _tuple; $f.allianceCmd = allianceCmd; $f.base = base; $f.bo = bo; $f.buildCmd = buildCmd; $f.cfg = cfg; $f.chatCmd = chatCmd; $f.cmd = cmd; $f.cmdBlockEndPos = cmdBlockEndPos; $f.cmdBlockSize = cmdBlockSize; $f.count = count; $f.count$1 = count$1; $f.count$2 = count$2; $f.cs = cs; $f.data = data; $f.data$1 = data$1; $f.data$2 = data$2; $f.frame = frame; $f.hotkeyCmd = hotkeyCmd; $f.i = i; $f.i$1 = i$1; $f.i$2 = i$2; $f.i$3 = i$3; $f.liftOffCmd = liftOffCmd; $f.parseOk = parseOk; $f.pec = pec; $f.pingCmd = pingCmd; $f.r = r; $f.rccmd = rccmd; $f.rccmd$1 = rccmd$1; $f.remBytes = remBytes; $f.selectCmd = selectCmd; $f.selectCmd$1 = selectCmd$1; $f.size = size; $f.sr = sr; $f.tocmd = tocmd; $f.tocmd$1 = tocmd$1; $f.ucmd = ucmd; $f.visionCmd = visionCmd; $f.x = x; $f.x$1 = x$1; $f.x$2 = x$2; $f.x$3 = x$3; $f.x$4 = x$4; $f.y = y; $f.y$1 = y$1; $f.$s = $s; $f.$r = $r; return $f;
 	};
 	parseMapData = function(data, r, cfg) {
-		var _1, _2, _q, _r$1, _r$2, _r$3, _tmp, _tmp$1, cfg, count, count$1, data, extendedStringsData, getString, height, i, id, maxI, md, ownerID, r, scenarioDescriptionIdx, scenarioNameIdx, size, sr, ssEndPos, ssSize, stringsData, stringsStart, stringsStart$1, unitEndPos, unitID, width, x, x$1, y, $s, $r;
-		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; _1 = $f._1; _2 = $f._2; _q = $f._q; _r$1 = $f._r$1; _r$2 = $f._r$2; _r$3 = $f._r$3; _tmp = $f._tmp; _tmp$1 = $f._tmp$1; cfg = $f.cfg; count = $f.count; count$1 = $f.count$1; data = $f.data; extendedStringsData = $f.extendedStringsData; getString = $f.getString; height = $f.height; i = $f.i; id = $f.id; maxI = $f.maxI; md = $f.md; ownerID = $f.ownerID; r = $f.r; scenarioDescriptionIdx = $f.scenarioDescriptionIdx; scenarioNameIdx = $f.scenarioNameIdx; size = $f.size; sr = $f.sr; ssEndPos = $f.ssEndPos; ssSize = $f.ssSize; stringsData = $f.stringsData; stringsStart = $f.stringsStart; stringsStart$1 = $f.stringsStart$1; unitEndPos = $f.unitEndPos; unitID = $f.unitID; width = $f.width; x = $f.x; x$1 = $f.x$1; y = $f.y; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
+		var _1, _2, _i, _i$1, _q, _r$1, _r$2, _r$3, _r$4, _r$5, _ref, _ref$1, _tmp, _tmp$1, cfg, count, count$1, count$2, count$3, data, extendedStringsData, getString, height, i, i$1, i$2, id, id$1, id$2, maxI, md, ownerID, owners, r, resAmount, scenarioDescriptionIdx, scenarioNameIdx, sides, size, sr, ssEndPos, ssSize, stringsData, stringsStart, stringsStart$1, unitEndPos, unitID, width, x, x$1, x$2, x$3, y, $s, $r;
+		/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; _1 = $f._1; _2 = $f._2; _i = $f._i; _i$1 = $f._i$1; _q = $f._q; _r$1 = $f._r$1; _r$2 = $f._r$2; _r$3 = $f._r$3; _r$4 = $f._r$4; _r$5 = $f._r$5; _ref = $f._ref; _ref$1 = $f._ref$1; _tmp = $f._tmp; _tmp$1 = $f._tmp$1; cfg = $f.cfg; count = $f.count; count$1 = $f.count$1; count$2 = $f.count$2; count$3 = $f.count$3; data = $f.data; extendedStringsData = $f.extendedStringsData; getString = $f.getString; height = $f.height; i = $f.i; i$1 = $f.i$1; i$2 = $f.i$2; id = $f.id; id$1 = $f.id$1; id$2 = $f.id$2; maxI = $f.maxI; md = $f.md; ownerID = $f.ownerID; owners = $f.owners; r = $f.r; resAmount = $f.resAmount; scenarioDescriptionIdx = $f.scenarioDescriptionIdx; scenarioNameIdx = $f.scenarioNameIdx; sides = $f.sides; size = $f.size; sr = $f.sr; ssEndPos = $f.ssEndPos; ssSize = $f.ssSize; stringsData = $f.stringsData; stringsStart = $f.stringsStart; stringsStart$1 = $f.stringsStart$1; unitEndPos = $f.unitEndPos; unitID = $f.unitID; width = $f.width; x = $f.x; x$1 = $f.x$1; x$2 = $f.x$2; x$3 = $f.x$3; y = $f.y; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
 		extendedStringsData = [extendedStringsData];
 		r = [r];
 		stringsData = [stringsData];
-		md = new rep.MapData.ptr(0, ptrType$27.nil, "", "", sliceType$9.nil, sliceType$10.nil, sliceType$10.nil, sliceType$11.nil, ptrType$28.nil);
+		md = new rep.MapData.ptr(0, ptrType$27.nil, "", "", sliceType$9.nil, sliceType$10.nil, sliceType$11.nil, sliceType$12.nil, sliceType$12.nil, sliceType$13.nil, ptrType$30.nil);
 		r[0].MapData = md;
 		if (cfg.Debug) {
 			md.Debug = new rep.MapDataDebug.ptr(data);
@@ -35233,19 +35461,21 @@ $packages["github.com/icza/screp/repparser"] = (function() {
 				/* */ if (_1 === ("VER ")) { $s = 4; continue; }
 				/* */ if (_1 === ("ERA ")) { $s = 5; continue; }
 				/* */ if (_1 === ("DIM ")) { $s = 6; continue; }
-				/* */ if (_1 === ("MTXM")) { $s = 7; continue; }
-				/* */ if (_1 === ("UNIT")) { $s = 8; continue; }
-				/* */ if (_1 === ("SPRP")) { $s = 9; continue; }
-				/* */ if (_1 === ("STR ")) { $s = 10; continue; }
-				/* */ if (_1 === ("STRx")) { $s = 11; continue; }
-				/* */ $s = 12; continue;
+				/* */ if (_1 === ("OWNR")) { $s = 7; continue; }
+				/* */ if (_1 === ("SIDE")) { $s = 8; continue; }
+				/* */ if (_1 === ("MTXM")) { $s = 9; continue; }
+				/* */ if (_1 === ("UNIT")) { $s = 10; continue; }
+				/* */ if (_1 === ("SPRP")) { $s = 11; continue; }
+				/* */ if (_1 === ("STR ")) { $s = 12; continue; }
+				/* */ if (_1 === ("STRx")) { $s = 13; continue; }
+				/* */ $s = 14; continue;
 				/* if (_1 === ("VER ")) { */ case 4:
 					md.Version = sr.getUint16();
-					$s = 12; continue;
+					$s = 14; continue;
 				/* } else if (_1 === ("ERA ")) { */ case 5:
-					_r$1 = repcore.TileSetByID((sr.getUint16() & 7) >>> 0); /* */ $s = 13; case 13: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
+					_r$1 = repcore.TileSetByID((sr.getUint16() & 7) >>> 0); /* */ $s = 15; case 15: if($c) { $c = false; _r$1 = _r$1.$blk(); } if (_r$1 && _r$1.$blk !== undefined) { break s; }
 					md.TileSet = _r$1;
-					$s = 12; continue;
+					$s = 14; continue;
 				/* } else if (_1 === ("DIM ")) { */ case 6:
 					width = sr.getUint16();
 					height = sr.getUint16();
@@ -35257,68 +35487,110 @@ $packages["github.com/icza/screp/repparser"] = (function() {
 							r[0].Header.MapHeight = height;
 						}
 					}
-					$s = 12; continue;
-				/* } else if (_1 === ("MTXM")) { */ case 7:
+					$s = 14; continue;
+				/* } else if (_1 === ("OWNR")) { */ case 7:
+					count = 12;
+					if (count > ssSize) {
+						count = ssSize;
+					}
+					owners = sr.readSlice(count);
+					md.PlayerOwners = $makeSlice(sliceType$9, owners.$length);
+					_ref = owners;
+					_i = 0;
+					/* while (true) { */ case 16:
+						/* if (!(_i < _ref.$length)) { break; } */ if(!(_i < _ref.$length)) { $s = 17; continue; }
+						i = _i;
+						id$1 = ((_i < 0 || _i >= _ref.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref.$array[_ref.$offset + _i]);
+						_r$2 = repcore.PlayerOwnerByID(id$1); /* */ $s = 18; case 18: if($c) { $c = false; _r$2 = _r$2.$blk(); } if (_r$2 && _r$2.$blk !== undefined) { break s; }
+						(x = md.PlayerOwners, ((i < 0 || i >= x.$length) ? ($throwRuntimeError("index out of range"), undefined) : x.$array[x.$offset + i] = _r$2));
+						_i++;
+					$s = 16; continue;
+					case 17:
+					$s = 14; continue;
+				/* } else if (_1 === ("SIDE")) { */ case 8:
+					count$1 = 12;
+					if (count$1 > ssSize) {
+						count$1 = ssSize;
+					}
+					sides = sr.readSlice(count$1);
+					md.PlayerSides = $makeSlice(sliceType$10, sides.$length);
+					_ref$1 = sides;
+					_i$1 = 0;
+					/* while (true) { */ case 19:
+						/* if (!(_i$1 < _ref$1.$length)) { break; } */ if(!(_i$1 < _ref$1.$length)) { $s = 20; continue; }
+						i$1 = _i$1;
+						id$2 = ((_i$1 < 0 || _i$1 >= _ref$1.$length) ? ($throwRuntimeError("index out of range"), undefined) : _ref$1.$array[_ref$1.$offset + _i$1]);
+						_r$3 = repcore.PlayerSideByID(id$2); /* */ $s = 21; case 21: if($c) { $c = false; _r$3 = _r$3.$blk(); } if (_r$3 && _r$3.$blk !== undefined) { break s; }
+						(x$1 = md.PlayerSides, ((i$1 < 0 || i$1 >= x$1.$length) ? ($throwRuntimeError("index out of range"), undefined) : x$1.$array[x$1.$offset + i$1] = _r$3));
+						_i$1++;
+					$s = 19; continue;
+					case 20:
+					$s = 14; continue;
+				/* } else if (_1 === ("MTXM")) { */ case 9:
 					maxI = (_q = ssSize / 2, (_q === _q && _q !== 1/0 && _q !== -1/0) ? _q >>> 0 : $throwRuntimeError("integer divide by zero"));
 					if (md.Tiles.$length < ((maxI >> 0))) {
-						md.Tiles = $makeSlice(sliceType$9, maxI);
+						md.Tiles = $makeSlice(sliceType$11, maxI);
 					}
-					i = 0;
+					i$2 = 0;
 					while (true) {
-						if (!(i < maxI)) { break; }
-						(x = md.Tiles, ((i < 0 || i >= x.$length) ? ($throwRuntimeError("index out of range"), undefined) : x.$array[x.$offset + i] = sr.getUint16()));
-						i = i + (1) >>> 0;
+						if (!(i$2 < maxI)) { break; }
+						(x$2 = md.Tiles, ((i$2 < 0 || i$2 >= x$2.$length) ? ($throwRuntimeError("index out of range"), undefined) : x$2.$array[x$2.$offset + i$2] = sr.getUint16()));
+						i$2 = i$2 + (1) >>> 0;
 					}
-					$s = 12; continue;
-				/* } else if (_1 === ("UNIT")) { */ case 8:
+					$s = 14; continue;
+				/* } else if (_1 === ("UNIT")) { */ case 10:
 					while (true) {
 						if (!(sr.pos < ssEndPos)) { break; }
 						unitEndPos = sr.pos + 36 >>> 0;
 						sr.pos = sr.pos + (4) >>> 0;
-						x$1 = sr.getUint16();
+						x$3 = sr.getUint16();
 						y = sr.getUint16();
 						unitID = sr.getUint16();
 						sr.pos = sr.pos + (2) >>> 0;
 						sr.pos = sr.pos + (2) >>> 0;
 						sr.pos = sr.pos + (2) >>> 0;
 						ownerID = sr.getByte();
+						sr.pos = sr.pos + (1) >>> 0;
+						sr.pos = sr.pos + (1) >>> 0;
+						sr.pos = sr.pos + (1) >>> 0;
+						resAmount = sr.getUint32();
 						_2 = unitID;
 						if ((_2 === (176)) || (_2 === (177)) || (_2 === (178))) {
-							md.MineralFields = $append(md.MineralFields, new repcore.Point.ptr(x$1, y));
+							md.MineralFields = $append(md.MineralFields, new rep.Resource.ptr(new repcore.Point.ptr(x$3, y), resAmount));
 						} else if (_2 === (188)) {
-							md.Geysers = $append(md.Geysers, new repcore.Point.ptr(x$1, y));
+							md.Geysers = $append(md.Geysers, new rep.Resource.ptr(new repcore.Point.ptr(x$3, y), resAmount));
 						} else if (_2 === (214)) {
-							md.StartLocations = $append(md.StartLocations, new rep.StartLocation.ptr(new repcore.Point.ptr(x$1, y), ownerID));
+							md.StartLocations = $append(md.StartLocations, new rep.StartLocation.ptr(new repcore.Point.ptr(x$3, y), ownerID));
 						}
 						sr.pos = unitEndPos;
 					}
-					$s = 12; continue;
-				/* } else if (_1 === ("SPRP")) { */ case 9:
+					$s = 14; continue;
+				/* } else if (_1 === ("SPRP")) { */ case 11:
 					scenarioNameIdx = sr.getUint16();
 					scenarioDescriptionIdx = sr.getUint16();
-					$s = 12; continue;
-				/* } else if (_1 === ("STR ")) { */ case 10:
+					$s = 14; continue;
+				/* } else if (_1 === ("STR ")) { */ case 12:
 					stringsStart = ((sr.pos >> 0));
-					count = sr.getUint16();
-					if ((((stringsStart + 2 >> 0) + ($imul(((count >> 0)), 2)) >> 0) + 1 >> 0) < ((ssEndPos >> 0))) {
+					count$2 = sr.getUint16();
+					if ((((stringsStart + 2 >> 0) + ($imul(((count$2 >> 0)), 2)) >> 0) + 1 >> 0) < ((ssEndPos >> 0))) {
 						stringsData[0] = $subslice(data, stringsStart, ssEndPos);
 					}
-					$s = 12; continue;
-				/* } else if (_1 === ("STRx")) { */ case 11:
+					$s = 14; continue;
+				/* } else if (_1 === ("STRx")) { */ case 13:
 					stringsStart$1 = ((sr.pos >> 0));
-					count$1 = sr.getUint32();
-					if ((((stringsStart$1 + 4 >> 0) + ($imul(((count$1 >> 0)), 4)) >> 0) + 1 >> 0) < ((ssEndPos >> 0))) {
+					count$3 = sr.getUint32();
+					if ((((stringsStart$1 + 4 >> 0) + ($imul(((count$3 >> 0)), 4)) >> 0) + 1 >> 0) < ((ssEndPos >> 0))) {
 						stringsData[0] = $subslice(data, stringsStart$1, ssEndPos);
 						extendedStringsData[0] = true;
 					}
-				/* } */ case 12:
+				/* } */ case 14:
 			case 3:
 			sr.pos = ssEndPos;
 		$s = 1; continue;
 		case 2:
 		getString = (function(extendedStringsData, r, stringsData) { return function $b(idx) {
-			var _r$2, _tuple, idx, offset, offsetSize, pos, s, $s, $r;
-			/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; _r$2 = $f._r$2; _tuple = $f._tuple; idx = $f.idx; offset = $f.offset; offsetSize = $f.offsetSize; pos = $f.pos; s = $f.s; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
+			var _r$4, _tuple, idx, offset, offsetSize, pos, s, $s, $r;
+			/* */ $s = 0; var $f, $c = false; if (this !== undefined && this.$blk !== undefined) { $f = this; $c = true; _r$4 = $f._r$4; _tuple = $f._tuple; idx = $f.idx; offset = $f.offset; offsetSize = $f.offsetSize; pos = $f.pos; s = $f.s; $s = $f.$s; $r = $f.$r; } s: while (true) { switch ($s) { case 0:
 			if (idx === 0) {
 				$s = -1; return "";
 			}
@@ -35347,18 +35619,18 @@ $packages["github.com/icza/screp/repparser"] = (function() {
 				$r = log.Printf("Invalid strings offset: %d, strings index: %d, map: %s", new sliceType$4([new $Uint32(offset), new $Uint16(idx), new $String(r[0].Header.Map)])); /* */ $s = 6; case 6: if($c) { $c = false; $r = $r.$blk(); } if ($r && $r.$blk !== undefined) { break s; }
 				$s = -1; return "";
 			/* } */ case 5:
-			_r$2 = cString($subslice(stringsData[0], offset)); /* */ $s = 7; case 7: if($c) { $c = false; _r$2 = _r$2.$blk(); } if (_r$2 && _r$2.$blk !== undefined) { break s; }
-			_tuple = _r$2;
+			_r$4 = cString($subslice(stringsData[0], offset)); /* */ $s = 7; case 7: if($c) { $c = false; _r$4 = _r$4.$blk(); } if (_r$4 && _r$4.$blk !== undefined) { break s; }
+			_tuple = _r$4;
 			s = _tuple[0];
 			$s = -1; return s;
-			/* */ } return; } if ($f === undefined) { $f = { $blk: $b }; } $f._r$2 = _r$2; $f._tuple = _tuple; $f.idx = idx; $f.offset = offset; $f.offsetSize = offsetSize; $f.pos = pos; $f.s = s; $f.$s = $s; $f.$r = $r; return $f;
+			/* */ } return; } if ($f === undefined) { $f = { $blk: $b }; } $f._r$4 = _r$4; $f._tuple = _tuple; $f.idx = idx; $f.offset = offset; $f.offsetSize = offsetSize; $f.pos = pos; $f.s = s; $f.$s = $s; $f.$r = $r; return $f;
 		}; })(extendedStringsData, r, stringsData);
-		_r$2 = getString(scenarioNameIdx); /* */ $s = 14; case 14: if($c) { $c = false; _r$2 = _r$2.$blk(); } if (_r$2 && _r$2.$blk !== undefined) { break s; }
-		md.Name = _r$2;
-		_r$3 = getString(scenarioDescriptionIdx); /* */ $s = 15; case 15: if($c) { $c = false; _r$3 = _r$3.$blk(); } if (_r$3 && _r$3.$blk !== undefined) { break s; }
-		md.Description = _r$3;
+		_r$4 = getString(scenarioNameIdx); /* */ $s = 22; case 22: if($c) { $c = false; _r$4 = _r$4.$blk(); } if (_r$4 && _r$4.$blk !== undefined) { break s; }
+		md.Name = _r$4;
+		_r$5 = getString(scenarioDescriptionIdx); /* */ $s = 23; case 23: if($c) { $c = false; _r$5 = _r$5.$blk(); } if (_r$5 && _r$5.$blk !== undefined) { break s; }
+		md.Description = _r$5;
 		$s = -1; return $ifaceNil;
-		/* */ } return; } if ($f === undefined) { $f = { $blk: parseMapData }; } $f._1 = _1; $f._2 = _2; $f._q = _q; $f._r$1 = _r$1; $f._r$2 = _r$2; $f._r$3 = _r$3; $f._tmp = _tmp; $f._tmp$1 = _tmp$1; $f.cfg = cfg; $f.count = count; $f.count$1 = count$1; $f.data = data; $f.extendedStringsData = extendedStringsData; $f.getString = getString; $f.height = height; $f.i = i; $f.id = id; $f.maxI = maxI; $f.md = md; $f.ownerID = ownerID; $f.r = r; $f.scenarioDescriptionIdx = scenarioDescriptionIdx; $f.scenarioNameIdx = scenarioNameIdx; $f.size = size; $f.sr = sr; $f.ssEndPos = ssEndPos; $f.ssSize = ssSize; $f.stringsData = stringsData; $f.stringsStart = stringsStart; $f.stringsStart$1 = stringsStart$1; $f.unitEndPos = unitEndPos; $f.unitID = unitID; $f.width = width; $f.x = x; $f.x$1 = x$1; $f.y = y; $f.$s = $s; $f.$r = $r; return $f;
+		/* */ } return; } if ($f === undefined) { $f = { $blk: parseMapData }; } $f._1 = _1; $f._2 = _2; $f._i = _i; $f._i$1 = _i$1; $f._q = _q; $f._r$1 = _r$1; $f._r$2 = _r$2; $f._r$3 = _r$3; $f._r$4 = _r$4; $f._r$5 = _r$5; $f._ref = _ref; $f._ref$1 = _ref$1; $f._tmp = _tmp; $f._tmp$1 = _tmp$1; $f.cfg = cfg; $f.count = count; $f.count$1 = count$1; $f.count$2 = count$2; $f.count$3 = count$3; $f.data = data; $f.extendedStringsData = extendedStringsData; $f.getString = getString; $f.height = height; $f.i = i; $f.i$1 = i$1; $f.i$2 = i$2; $f.id = id; $f.id$1 = id$1; $f.id$2 = id$2; $f.maxI = maxI; $f.md = md; $f.ownerID = ownerID; $f.owners = owners; $f.r = r; $f.resAmount = resAmount; $f.scenarioDescriptionIdx = scenarioDescriptionIdx; $f.scenarioNameIdx = scenarioNameIdx; $f.sides = sides; $f.size = size; $f.sr = sr; $f.ssEndPos = ssEndPos; $f.ssSize = ssSize; $f.stringsData = stringsData; $f.stringsStart = stringsStart; $f.stringsStart$1 = stringsStart$1; $f.unitEndPos = unitEndPos; $f.unitID = unitID; $f.width = width; $f.x = x; $f.x$1 = x$1; $f.x$2 = x$2; $f.x$3 = x$3; $f.y = y; $f.$s = $s; $f.$r = $r; return $f;
 	};
 	parsePlayerNames = function(data, r, cfg) {
 		var _i, _r$1, _ref, _tmp, _tmp$1, _tuple, cfg, data, i, name, orig, p, pos, r, $s, $r;
@@ -35417,7 +35689,7 @@ $packages["github.com/icza/screp/repparser"] = (function() {
 			if ((pos + 16 >> 0) > data.$length) {
 				break;
 			}
-			c = repcore.ColorByFootprint($subslice(data, ($imul(i, 16)), (($imul(i, 16)) + 16 >> 0)));
+			c = repcore.ColorByFootprint($subslice(data, pos, (pos + 16 >> 0)));
 			if (!(c === ptrType$15.nil)) {
 				p.Color = c;
 			}
@@ -35468,7 +35740,7 @@ $packages["github.com/icza/screp/repparser"] = (function() {
 		$s = -1; return [s, orig];
 		/* */ } return; } if ($f === undefined) { $f = { $blk: cString }; } $f._i = _i; $f._r$1 = _r$1; $f._ref = _ref; $f._tmp = _tmp; $f._tmp$1 = _tmp$1; $f._tmp$2 = _tmp$2; $f._tmp$3 = _tmp$3; $f._tuple = _tuple; $f.ch = ch; $f.data = data; $f.err = err; $f.i = i; $f.krdata = krdata; $f.orig = orig; $f.s = s; $f.$s = $s; $f.$r = $r; return $f;
 	};
-	ptrType$29.methods = [{prop: "getByte", name: "getByte", pkg: "github.com/icza/screp/repparser", typ: $funcType([], [$Uint8], false)}, {prop: "getUint16", name: "getUint16", pkg: "github.com/icza/screp/repparser", typ: $funcType([], [$Uint16], false)}, {prop: "getUint32", name: "getUint32", pkg: "github.com/icza/screp/repparser", typ: $funcType([], [$Uint32], false)}, {prop: "getString", name: "getString", pkg: "github.com/icza/screp/repparser", typ: $funcType([$Uint32], [$String], false)}, {prop: "readSlice", name: "readSlice", pkg: "github.com/icza/screp/repparser", typ: $funcType([$Uint32], [sliceType], false)}];
+	ptrType$31.methods = [{prop: "getByte", name: "getByte", pkg: "github.com/icza/screp/repparser", typ: $funcType([], [$Uint8], false)}, {prop: "getUint16", name: "getUint16", pkg: "github.com/icza/screp/repparser", typ: $funcType([], [$Uint16], false)}, {prop: "getUint32", name: "getUint32", pkg: "github.com/icza/screp/repparser", typ: $funcType([], [$Uint32], false)}, {prop: "getString", name: "getString", pkg: "github.com/icza/screp/repparser", typ: $funcType([$Uint32], [$String], false)}, {prop: "readSlice", name: "readSlice", pkg: "github.com/icza/screp/repparser", typ: $funcType([$Uint32], [sliceType], false)}];
 	sliceReader.init("github.com/icza/screp/repparser", [{prop: "b", name: "b", embedded: false, exported: false, typ: sliceType, tag: ""}, {prop: "pos", name: "pos", embedded: false, exported: false, typ: $Uint32, tag: ""}]);
 	Config.init("github.com/icza/screp/repparser", [{prop: "Commands", name: "Commands", embedded: false, exported: true, typ: $Bool, tag: ""}, {prop: "MapData", name: "MapData", embedded: false, exported: true, typ: $Bool, tag: ""}, {prop: "Debug", name: "Debug", embedded: false, exported: true, typ: $Bool, tag: ""}, {prop: "_$3", name: "_", embedded: false, exported: false, typ: structType, tag: ""}]);
 	Section.init("", [{prop: "ID", name: "ID", embedded: false, exported: true, typ: $Int, tag: ""}, {prop: "Size", name: "Size", embedded: false, exported: true, typ: $Int32, tag: ""}, {prop: "ParseFunc", name: "ParseFunc", embedded: false, exported: true, typ: funcType, tag: ""}, {prop: "StrID", name: "StrID", embedded: false, exported: true, typ: $String, tag: ""}]);
@@ -35540,7 +35812,7 @@ $packages["main"] = (function() {
 		/* */ } return; } if ($f === undefined) { $f = { $blk: parseBuffer }; } $f._r = _r; $f._r$1 = _r$1; $f._tuple = _tuple; $f.buffer = buffer; $f.err = err; $f.errStr = errStr; $f.res = res; $f.$s = $s; $f.$r = $r; return $f;
 	};
 	getVersion = function() {
-		return new sliceType$1([new sliceType(["screp version", "v1.5.1"]), new sliceType(["Parser version", "v1.7.0"]), new sliceType(["EAPM algorithm version", "v1.0.4"]), new sliceType(["Platform", "darwin js"]), new sliceType(["Built with", runtime.Version()]), new sliceType(["Author", "Andras Belicza"]), new sliceType(["Home page", "https://github.com/icza/screp"])]);
+		return new sliceType$1([new sliceType(["screp version", "v1.7.2"]), new sliceType(["Parser version", "v1.8.2"]), new sliceType(["EAPM algorithm version", "v1.0.4"]), new sliceType(["Platform", "darwin js"]), new sliceType(["Built with", runtime.Version()]), new sliceType(["Author", "Andras Belicza"]), new sliceType(["Home page", "https://github.com/icza/screp"])]);
 	};
 	main = function() {
 		$module.exports.ScrepJS = $externalize($makeMap($String.keyFor, [{ k: "parseBuffer", v: new funcType(parseBuffer) }, { k: "getVersion", v: new funcType$1(getVersion) }]), mapType);
