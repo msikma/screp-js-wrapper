@@ -53,8 +53,16 @@ var $initAllLinknames = function() {
   }
 }
 
+var __manual_fix_getArrayConstructor = function(array) {
+  if (globalThis.Buffer?.isBuffer(array)) {
+    return Buffer.alloc;
+  }
+  return array.constructor;
+};
+
 var $mapArray = function(array, f) {
-  var newArray = new array.constructor(array.length);
+  var arrayConstructor = __manual_fix_getArrayConstructor(array);
+  var newArray = new arrayConstructor(array.length);
   for (var i = 0; i < array.length; i++) {
     newArray[i] = f(array[i]);
   }
