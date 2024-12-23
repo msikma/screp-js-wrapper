@@ -2,7 +2,8 @@
 
 # screp-js-wrapper
 
-> ### Note: it's recommend that you use [screp-js](https://github.com/msikma/screp-js) instead of this package.
+> [!WARNING]  
+> This project is deprecated, as I had trouble generating new versions and it's significantly slower than running the native binary. I recommend you use [screp-ts](https://github.com/msikma/screp-ts) instead.
 
 A pure Javascript version of [screp](https://github.com/icza/screp), a StarCraft: Remastered replay file parser, compiled from the original Go version using [GopherJS](https://github.com/gopherjs/gopherjs).
 
